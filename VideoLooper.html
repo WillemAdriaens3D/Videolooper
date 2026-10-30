@@ -139,6 +139,9 @@ video.mirror { transform: scaleX(-1); }
 .big-btn { height: 56px; border-radius: 28px; border: 0; background: var(--play); color: #00281a; font: 700 17px var(--font); cursor: pointer; }
 .big-btn:disabled { opacity: .6; }
 #startMsg { color: var(--rec); min-height: 1.4em; }
+.ver { margin: 0; font-size: 12px; opacity: .55; text-align: center; }
+.meter b { position: absolute; top: -2px; bottom: -2px; width: 2px; margin-left: -1px; background: var(--text, #fff); opacity: .8; display: none; }
+.meter.trig b { display: block; }
 
 .scrim { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.5); }
 .sheet {
@@ -196,7 +199,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
       <b id="masterText">No loop yet</b>
     </div>
     <select id="input" class="ctl" aria-label="Audio input"></select>
-    <div class="meter" title="Input level"><i id="meterFill"></i></div>
+    <div class="meter" id="meter" title="Input level (the mark is the trigger level)"><i id="meterFill"></i><b id="meterTrig"></b></div>
     <button id="monitorBtn" class="ctl" aria-pressed="false" title="Hear your input through the app">Monitor</button>
     <button id="videoBtn" class="ctl" aria-pressed="false" title="Record a looping video with each loop">Video</button>
     <span class="spacer"></span>
@@ -219,6 +222,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <button id="startBtn" class="big-btn">Start with microphone</button>
     <button id="demoBtn" class="btn" style="height:46px;border-radius:23px">Try with demo guitar sound</button>
     <div id="startMsg" role="status"></div>
+    <p class="ver">Version 2026-10-30 · 3</p>
   </div>
 </div>
 
@@ -280,6 +284,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
   <section>
     <h3>Keyboard and pedals</h3>
     <p><kbd>Space</kbd> is the record button: press to start a new loop in the next empty square, press again to stop. It also stops an overdub, or cancels a recording that is still waiting for the first note.</p>
+    <p class="ver" style="text-align:left">Version 2026-10-30 · 3</p>
     <p>Keys <kbd>1</kbd>–<kbd>9</kbd> and <kbd>0</kbd> tap loops 1–10, so a Bluetooth keyboard or a pedal that sends number keys works as a foot switch.</p>
   </section>
 </aside>
@@ -417,7 +422,12 @@ class Looper extends AudioWorkletProcessor {
         }
         break;
       }
-      case ARMED: this.cancel(); break;
+      case ARMED: {
+        const waited = this.waitSound;
+        this.cancel();
+        if (waited) this.send({ type: 'msg', text: 'Nothing recorded: no note reached the trigger level. Play louder or lower Trigger level in Settings.' });
+        break;
+      }
       case REC: this.requestStop(); break;
       case FIN: break;
       case PLAY: c.st = MUTE; break;
@@ -749,7 +759,7 @@ const DEFAULTS = {
   gridSize: 6, quantize: true, monitor: false, video: false, front: true,
   latencyMs: null, // null = use the estimate
   channel: 0, inGain: 1, outVol: 1, videoOffsetMs: 0, inputId: '',
-  autoStart: true, triggerDb: -30,
+  autoStart: true, triggerDb: -40,
 };
 let settings = loadSettings();
 function loadSettings() {
@@ -760,6 +770,7 @@ function saveSettings() {
   try { localStorage.setItem('videolooper.settings', JSON.stringify(settings)); } catch {}
 }
 if (!GRID_SIZES.includes(settings.gridSize)) settings.gridSize = DEFAULTS.gridSize;
+if (!settings.v || settings.v < 3) { if (settings.triggerDb === -30) settings.triggerDb = -40; settings.v = 3; saveSettings(); }
 
 // ------------------------------------------------------------------ state
 
@@ -1290,6 +1301,9 @@ function frame() {
   const fill = $('#meterFill');
   fill.style.width = `${Math.max(0, Math.min(1, (db + 60) / 60)) * 100}%`;
   fill.className = db > -1 ? 'clip' : db > -9 ? 'hot' : '';
+  const meter = $('#meter');
+  meter.classList.toggle('trig', !!settings.autoStart);
+  $('#meterTrig').style.left = `${Math.max(0, Math.min(1, (settings.triggerDb + 60) / 60)) * 100}%`;
   peakShown *= 0.88;
 
   for (let i = 0; i < cellEls.length; i++) {
@@ -1359,18 +1373,27 @@ function spaceTap() {
 
 window.addEventListener('keyup', (e) => {
   // Stop a focused button from also 'clicking' on space release.
-  if ((e.code === 'Space' || e.key === ' ') && !e.target.closest('input, select, textarea')) e.preventDefault();
-});
+  if (isSpace(e) && !typingIn(e.target)) e.preventDefault();
+}, true);
+
+/** True only for fields you type into. A focused select, switch or slider gives up the key. */
+function typingIn(el) {
+  return !!el?.closest?.('textarea, input:not([type=checkbox]):not([type=range]):not([type=radio]):not([type=button])');
+}
+const isSpace = (e) => e.code === 'Space' || e.key === ' ' || e.key === 'Spacebar' || e.keyCode === 32;
 
 window.addEventListener('keydown', (e) => {
-  if (e.repeat || e.target.closest('input, select')) return;
-  if (e.code === 'Space' || e.key === ' ') {
-    if (e.target.closest('button, textarea')) e.target.blur();
-    e.preventDefault(); spaceTap(); return;
+  if (typingIn(e.target)) return;
+  if (isSpace(e)) {
+    e.preventDefault(); e.stopPropagation();
+    if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+    if (!e.repeat) spaceTap();
+    return;
   }
+  if (e.repeat) return;
   const k = e.key === '0' ? 9 : '123456789'.indexOf(e.key);
   if (k >= 0 && k < settings.gridSize) { e.preventDefault(); tap(k); }
-});
+}, true);
 
 // ------------------------------------------------------------------ sheets
 
