@@ -238,6 +238,18 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <input type="checkbox" id="quantize" class="switch" aria-label="Start recording on the beat">
   </section>
   <section>
+    <div class="row">
+      <div>
+        <h3>Start recording on the first note</h3>
+        <p>Tap, then play: the first loop starts exactly when you start playing and ends on the note you play as you tap stop. Later loops and overdubs keep their place against the first loop.</p>
+      </div>
+      <input type="checkbox" id="autoStart" class="switch" aria-label="Start recording on the first note">
+    </div>
+    <label for="trigger">Trigger level <output id="trigOut"></output></label>
+    <input type="range" id="trigger" min="-60" max="-6" step="1">
+    <p>Lower it if soft notes don't start the recording; raise it if noise starts it too early.</p>
+  </section>
+  <section>
     <h3>Input channel</h3>
     <div class="seg" id="channels"></div>
     <p id="channelHint">For a 2-input interface like a Scarlett 2i2: pick the input your guitar is plugged into.</p>
@@ -328,8 +340,10 @@ class Looper extends AudioWorkletProcessor {
     this.masterLen = 0; this.masterStart = 0;
     this.recCell = -1; this.recStart = 0; this.armStart = 0; this.recLen = 0; this.recTarget = 0;
     this.dubCell = -1;
+    this.waitSound = false; // armed, waiting for the first note to start recording
     this.pos = 0;
-    this.o = { monitor: false, quantize: true, latency: Math.round(0.1 * sr), channel: 0, inChannels: 1, inGain: 1, demo: false };
+    this.o = { monitor: false, quantize: true, latency: Math.round(0.1 * sr), channel: 0, inChannels: 1, inGain: 1, demo: false,
+               autoStart: true, trigger: 0.03 };
     this.ks = { buf: new Float32Array(Math.ceil(sr / 50)), len: 0, p: 0, next: 0, idx: 0 };
     this.peak = 0; this.meterAt = 0;
     this.cal = null;
@@ -342,7 +356,7 @@ class Looper extends AudioWorkletProcessor {
     this.send({
       type: 'state',
       master: { len: this.masterLen, start: this.masterStart },
-      rec: { cell: this.recCell, start: this.recStart, arm: this.armStart, target: this.recTarget },
+      rec: { cell: this.recCell, start: this.recStart, arm: this.armStart, target: this.recTarget, wait: this.waitSound },
       dub: this.dubCell,
       cells: this.cells.map(c => ({ st: c.st, start: c.start, len: c.data ? c.data.length : 0, cycles: c.cycles, vol: c.vol, undo: !!c.undo })),
     });
@@ -378,7 +392,11 @@ class Looper extends AudioWorkletProcessor {
         if (this.recCell >= 0) { this.send({ type: 'msg', text: 'Finish the current recording first' }); return; }
         this.recCell = i;
         this.send({ type: 'recRequested', cell: i });
-        if (this.masterLen === 0 || !this.o.quantize) {
+        if ((this.masterLen === 0 || !this.o.quantize) && this.o.autoStart) {
+          // Recording starts at the first note, not at the tap. Later loops keep their real
+          // position against the first loop, so they stay in time with it.
+          c.st = ARMED; this.waitSound = true; this.armStart = Infinity;
+        } else if (this.masterLen === 0 || !this.o.quantize) {
           c.st = REC; this.recStart = g; this.recLen = 0;
           this.send({ type: 'recStarted', cell: i, frame: g });
         } else {
@@ -406,13 +424,63 @@ class Looper extends AudioWorkletProcessor {
     }
   }
 
+  /** Largest |sample| in input frames [a, b), read from the input history. */
+  histMax(a, b) {
+    const H = this.hist.length;
+    let m = 0;
+    for (let f = a; f < b; f++) { const v = Math.abs(this.hist[mod(f, H)]); if (v > m) m = v; }
+    return m;
+  }
+
+  /** Walks back in 1 ms steps from frame g while the sound stays above `floor`: the start of the note. */
+  noteStart(g, floor) {
+    const W = Math.max(1, Math.round(this.sr / 1000));
+    let f = g;
+    for (let k = 0; k < 30; k++) {
+      if (this.histMax(f - W, f) < floor) break;
+      f -= W;
+    }
+    return f;
+  }
+
+  /**
+   * The note you played on the stop tap: the strongest attack in the last 450 ms before frame g.
+   * A tap always lands a little after the note, so the loop is cut where that note began.
+   */
+  downbeatBefore(g) {
+    const sr = this.sr, W = Math.max(1, Math.round(sr / 1000)), th = this.o.trigger;
+    const n = Math.round(0.45 * sr / W), back = 12;
+    const a = g - (n + back) * W;
+    const m = new Float32Array(n + back);
+    for (let j = 0; j < m.length; j++) m[j] = this.histMax(a + j * W, a + (j + 1) * W);
+    let best = -1, bestScore = 0;
+    for (let j = back; j < m.length; j++) {
+      let prior = 0;
+      for (let q = j - back; q < j - 1; q++) if (m[q] > prior) prior = m[q];
+      const rise = m[j] / (prior + 1e-4);
+      if (m[j] < th || rise < 2.5) continue;
+      const score = m[j] * Math.min(rise, 20);
+      if (score > bestScore) { bestScore = score; best = j; }
+    }
+    if (best < 0) return -1;
+    let prior = 0;
+    for (let q = best - back; q < best - 1; q++) if (m[q] > prior) prior = m[q];
+    return this.noteStart(a + (best + 1) * W, Math.max(prior * 1.5, th * 0.25));
+  }
+
   requestStop() {
     const c = this.cells[this.recCell];
     if (this.masterLen === 0) {
-      if (this.recLen < this.sr / 4) {
+      let len = this.recLen;
+      if (this.o.autoStart) {
+        const d = this.downbeatBefore(this.pos);
+        const cut = d < 0 ? -1 : d - this.preroll() - this.recStart;
+        if (cut >= this.sr / 4 && cut <= this.recLen) len = cut;
+      }
+      if (len < this.sr / 4) {
         this.cancel();
         this.send({ type: 'msg', text: 'Too short. Tap once to start and again to stop.' });
-      } else this.finalize(this.recLen);
+      } else this.finalize(len);
       return;
     }
     // Round to whole cycles. Stopping just after a cycle start rounds down.
@@ -450,9 +518,13 @@ class Looper extends AudioWorkletProcessor {
     this.send({ type: 'msg', text: 'Maximum loop length reached' });
   }
 
+  /** A little room before each detected note, so the pick attack is never cut. */
+  preroll() { return Math.round(this.sr * 0.002); }
+
   cancel() {
     const i = this.recCell; if (i < 0) return;
     this.cells[i].st = EMPTY;
+    this.waitSound = false;
     this.recCell = -1; this.recLen = 0; this.recTarget = 0;
     this.send({ type: 'cancelled', cell: i });
   }
@@ -589,7 +661,18 @@ class Looper extends AudioWorkletProcessor {
       const c = this.cells[this.recCell];
       for (let i = 0; i < n && this.recCell >= 0; i++) {
         const g = g0 + i;
-        if (c.st === ARMED && g >= this.armStart) {
+        if (c.st === ARMED && this.waitSound) {
+          const ax = xin[i] < 0 ? -xin[i] : xin[i];
+          if (ax >= o.trigger) {
+            // First note: start a hair before it began (everything up to now is in `hist`).
+            const s = Math.max(g - this.hist.length + n + 1, this.noteStart(g, o.trigger * 0.25) - this.preroll());
+            const Hh = this.hist.length;
+            c.st = REC; this.waitSound = false; this.recStart = s; this.recLen = g - s;
+            for (let k = 0; k < this.recLen; k++) this.recBuf[k] = this.hist[mod(s + k, Hh)];
+            this.send({ type: 'recStarted', cell: this.recCell, frame: s });
+            this.snapshot();
+          }
+        } else if (c.st === ARMED && g >= this.armStart) {
           c.st = REC; this.recStart = g; this.recLen = 0;
           this.send({ type: 'recStarted', cell: this.recCell, frame: g });
           this.snapshot();
@@ -665,6 +748,7 @@ const DEFAULTS = {
   gridSize: 6, quantize: true, monitor: false, video: false, front: true,
   latencyMs: null, // null = use the estimate
   channel: 0, inGain: 1, outVol: 1, videoOffsetMs: 0, inputId: '',
+  autoStart: true, triggerDb: -30,
 };
 let settings = loadSettings();
 function loadSettings() {
@@ -683,7 +767,7 @@ let sr = 48000, inChannels = 1, estLatencyMs = 100, demoMode = false, engineInpu
 const DEMO = '__demo';
 let engine = {
   master: { len: 0, start: 0 },
-  rec: { cell: -1, start: 0, arm: 0, target: 0 },
+  rec: { cell: -1, start: 0, arm: 0, target: 0, wait: false },
   dub: -1,
   cells: Array.from({ length: MAXC }, () => ({ state: 'empty', start: 0, len: 0, cycles: 0, vol: 1, undo: false })),
 };
@@ -715,6 +799,7 @@ function pushSettings() {
     monitor: settings.monitor, quantize: settings.quantize,
     latency: Math.round(latencyMs() * sr / 1000),
     channel: settings.channel, inChannels, inGain: settings.inGain, demo: demoMode,
+    autoStart: settings.autoStart, trigger: Math.pow(10, settings.triggerDb / 20),
   } });
   if (outGain) outGain.gain.setTargetAtTime(settings.outVol, ctx.currentTime, 0.02);
 }
@@ -1214,8 +1299,8 @@ function frame() {
       phase = mod(aF - c.start, c.len) / c.len;
       badge = st === 'muted' ? 'Muted' : st === 'overdub' ? '● DUB' : c.cycles > 1 ? `×${c.cycles}` : '';
     } else if (st === 'armed' && engine.rec.cell === i) {
-      phase = M.len ? 1 - Math.max(0, engine.rec.arm - nowF) / M.len : 0;
-      badge = 'Starts on the beat';
+      if (engine.rec.wait) { phase = 0; badge = 'Play to start'; }
+      else { phase = M.len ? 1 - Math.max(0, engine.rec.arm - nowF) / M.len : 0; badge = 'Starts on the beat'; }
     } else if (st === 'recording' && engine.rec.cell === i) {
       const recLen = Math.max(0, nowF - engine.rec.start);
       if (M.len) { phase = (recLen % M.len) / M.len; badge = `● REC ×${Math.floor(recLen / M.len) + 1}`; }
@@ -1309,6 +1394,8 @@ segmented('#camera', ['Front', 'Back'], (i) => (i === 0) === settings.front, asy
 });
 
 $('#quantize').addEventListener('change', (e) => { settings.quantize = e.target.checked; saveSettings(); pushSettings(); });
+$('#autoStart').addEventListener('change', (e) => { settings.autoStart = e.target.checked; saveSettings(); pushSettings(); });
+$('#trigger').addEventListener('input', (e) => { settings.triggerDb = +e.target.value; saveSettings(); pushSettings(); syncControls(); });
 $('#inGain').addEventListener('input', (e) => { settings.inGain = +e.target.value; saveSettings(); pushSettings(); syncControls(); });
 $('#latency').addEventListener('input', (e) => { settings.latencyMs = +e.target.value; saveSettings(); pushSettings(); syncControls(); });
 $('#latResetBtn').addEventListener('click', () => { settings.latencyMs = null; saveSettings(); updateEstimate(); setCal('', ''); });
@@ -1350,6 +1437,9 @@ function syncControls() {
   $('#videoBtn').setAttribute('aria-pressed', String(videoOn));
   for (const id of ['#gridSizes', '#channels', '#camera']) $(id)._sync?.();
   $('#quantize').checked = settings.quantize;
+  $('#autoStart').checked = settings.autoStart;
+  $('#trigger').value = settings.triggerDb;
+  $('#trigOut').textContent = `${settings.triggerDb} dB`;
   $('#inGain').value = settings.inGain;
   $('#gainOut').textContent = settings.inGain > 0 ? `${(20 * Math.log10(settings.inGain)).toFixed(1)} dB` : 'off';
   $('#latency').value = latencyMs();
