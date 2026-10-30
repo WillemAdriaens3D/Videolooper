@@ -1,0 +1,1402 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#0b0c10">
+<title>Video Looper</title>
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDggMTA4Ij4KICA8cmVjdCB3aWR0aD0iMTA4IiBoZWlnaHQ9IjEwOCIgZmlsbD0iIzBiMGMxMCIvPgogIDxwYXRoIGQ9Ik01NCAyMiBBMzIgMzIgMCAxIDEgMjUgNDAiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNkZGM5NyIgc3Ryb2tlLXdpZHRoPSI4IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KICA8Y2lyY2xlIGN4PSI1NCIgY3k9IjU0IiByPSIxMiIgZmlsbD0iI2ZmNGQ0ZCIvPgo8L3N2Zz4=">
+<style>
+/* Layout: a fixed control strip on top, the rest of the screen divided evenly between loop cells.
+   Single dark theme on purpose: it's a stage instrument, used in dim rooms. System fonts so it works offline. */
+:root {
+  color-scheme: dark;
+  --bg: #0b0c10;
+  --panel: #14161c;
+  --cell: #171a21;
+  --line: #262a34;
+  --track: #2b3039;
+  --fg: #e8eaef;
+  --dim: #8a909c;
+  --play: #3ddc97;
+  --rec: #ff4d4d;
+  --arm: #ffb020;
+  --dub: #ff8a3d;
+  --mute: #5d6470;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", "Roboto Mono", Menlo, monospace;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--fg); font: 14px/1.4 var(--font);
+  overflow: hidden; overscroll-behavior: none;
+  -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+}
+button { font: inherit; color: inherit; }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--play); outline-offset: 2px; }
+
+#app {
+  height: 100%; display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
+
+/* ---------- top bar ---------- */
+#bar {
+  flex: none; height: 56px; display: flex; align-items: center; gap: 8px;
+  padding: 0 10px; overflow-x: auto; scrollbar-width: none;
+}
+#bar::-webkit-scrollbar { display: none; }
+.master { display: flex; align-items: center; gap: 8px; flex: none; min-width: 112px; }
+.master svg { width: 28px; height: 28px; flex: none; }
+.master b { font: 600 14px var(--font); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.master b.off { color: var(--rec); }
+.ctl {
+  flex: none; height: 36px; border-radius: 18px; border: 1px solid var(--line);
+  background: var(--panel); padding: 0 14px; display: inline-flex; align-items: center; gap: 6px;
+  cursor: pointer; white-space: nowrap;
+}
+.ctl[aria-pressed="true"] { background: color-mix(in srgb, var(--play) 18%, var(--panel)); border-color: var(--play); color: var(--play); }
+.ctl.danger { color: var(--rec); border-color: color-mix(in srgb, var(--rec) 60%, var(--line)); }
+select.ctl { appearance: none; -webkit-appearance: none; max-width: 210px; text-overflow: ellipsis; padding-right: 28px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--dim) 50%), linear-gradient(135deg, var(--dim) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 16px, calc(100% - 11px) 16px; background-size: 5px 5px; background-repeat: no-repeat; }
+.meter { flex: none; width: 64px; height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; position: relative; }
+.meter i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--play); border-radius: 4px; }
+.meter i.hot { background: var(--arm); }
+.meter i.clip { background: var(--rec); }
+.spacer { flex: 1 0 4px; }
+@media (max-width: 640px) {
+  #bar { height: auto; flex-wrap: wrap; overflow: visible; padding-block: 8px; row-gap: 8px; }
+  .master { min-width: 0; }
+  select.ctl { max-width: 150px; }
+  .ctl { padding: 0 12px; }
+}
+
+/* ---------- grid ---------- */
+#grid { flex: 1; min-height: 0; display: grid; gap: 6px; padding: 6px; }
+.cell {
+  --c: var(--dim);
+  position: relative; overflow: hidden; border-radius: 14px; min-width: 0; min-height: 0;
+  background: var(--cell); border: 1px solid var(--line);
+  touch-action: manipulation; cursor: pointer;
+  transition: border-color .15s, box-shadow .15s, transform .06s;
+}
+.cell.pressed { transform: scale(.985); }
+.cell.s-armed { --c: var(--arm); }
+.cell.s-recording, .cell.s-finishing { --c: var(--rec); }
+.cell.s-playing { --c: var(--play); }
+.cell.s-muted { --c: var(--mute); }
+.cell.s-overdub { --c: var(--dub); }
+.cell:not(.s-empty) { border: 2px solid color-mix(in srgb, var(--c) 70%, transparent); }
+.cell.s-recording, .cell.s-overdub { box-shadow: inset 0 0 0 1px var(--c), inset 0 0 32px color-mix(in srgb, var(--c) 30%, transparent); }
+
+.media { position: absolute; inset: 0; }
+.media video { width: 100%; height: 100%; object-fit: cover; display: block; background: #000; }
+video.mirror { transform: scaleX(-1); }
+.shade { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity .2s; }
+.cell.s-muted .shade { opacity: .6; }
+
+.ring { position: absolute; inset: 0; margin: auto; width: 62%; height: 62%; color: var(--c); pointer-events: none; }
+.ring circle { fill: none; stroke-width: 6; }
+.ring .track { stroke: var(--track); }
+.ring .arc { stroke: currentColor; stroke-linecap: round; stroke-dasharray: 100 100; stroke-dashoffset: 100; }
+.cell.s-empty .ring { display: none; }
+.cell.has-media .ring { inset: 10px 10px auto auto; margin: 0; width: 30px; height: 30px; }
+.cell.has-media .ring circle { stroke-width: 12; }
+.cell.s-armed .ring, .cell.s-armed .label { animation: pulse .9s ease-in-out infinite alternate; }
+@keyframes pulse { from { opacity: .35; } to { opacity: 1; } }
+
+.num { position: absolute; top: 9px; left: 11px; font: 600 13px var(--font); color: var(--dim); pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+.label { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 2px; pointer-events: none; text-align: center; padding: 0 8px; }
+.label .big { font: 300 34px/1 var(--font); color: var(--dim); }
+.label .txt { font-size: 12px; color: var(--dim); }
+.label .badge { font: 700 13px var(--font); font-variant-numeric: tabular-nums; color: var(--c);
+  background: rgba(0,0,0,.45); border-radius: 8px; padding: 3px 8px; }
+.label .badge:empty { display: none; }
+.cell.has-media .label { justify-content: flex-end; padding-bottom: 10px; }
+.more {
+  position: absolute; right: 4px; bottom: 4px; width: 40px; height: 40px; border: 0; border-radius: 12px;
+  background: transparent; color: var(--dim); font-size: 20px; line-height: 1; cursor: pointer;
+}
+.cell.has-media .more { background: rgba(0,0,0,.35); color: #fff; }
+.cell.s-empty .more { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .cell.s-armed .ring, .cell.s-armed .label { animation: none; }
+  .cell { transition: none; }
+}
+
+/* ---------- overlays & sheets ---------- */
+.overlay { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: var(--bg);
+  padding: 24px max(16px, env(safe-area-inset-right, 0px)) 24px max(16px, env(safe-area-inset-left, 0px)); }
+.start-card { max-width: 440px; display: flex; flex-direction: column; gap: 18px; }
+.start-card h1 { margin: 0; font: 700 28px/1.15 var(--font); text-wrap: balance; }
+.start-card p { margin: 0; color: var(--dim); }
+.start-card ul { margin: 0; padding-left: 18px; color: var(--dim); display: grid; gap: 6px; }
+.big-btn { height: 56px; border-radius: 28px; border: 0; background: var(--play); color: #00281a; font: 700 17px var(--font); cursor: pointer; }
+.big-btn:disabled { opacity: .6; }
+#startMsg { color: var(--rec); min-height: 1.4em; }
+
+.scrim { position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.5); }
+.sheet {
+  position: fixed; z-index: 21; top: 0; right: 0; bottom: 0; width: min(390px, 100%);
+  background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; overscroll-behavior: contain;
+  padding: calc(env(safe-area-inset-top, 0px) + 14px) max(18px, env(safe-area-inset-right, 0px)) calc(env(safe-area-inset-bottom, 0px) + 24px) 18px;
+  display: flex; flex-direction: column; gap: 22px;
+  -webkit-user-select: text; user-select: text;
+}
+.sheet.small { top: auto; left: 0; right: 0; margin: 0 auto; width: min(420px, 100%); border: 1px solid var(--line);
+  border-radius: 18px 18px 0 0; gap: 16px; }
+.sheet header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sheet h2 { margin: 0; font: 700 20px var(--font); }
+.sheet h3 { margin: 0 0 8px; font: 600 14px var(--font); }
+.sheet p { margin: 6px 0 0; font-size: 12.5px; color: var(--dim); }
+.sheet section > label { display: flex; justify-content: space-between; margin-top: 12px; font-weight: 600; }
+.sheet output { font-variant-numeric: tabular-nums; color: var(--fg); font-weight: 600; }
+.row { display: flex; align-items: center; gap: 14px; }
+.row > div { flex: 1; min-width: 0; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button { min-width: 44px; height: 36px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); cursor: pointer; font-variant-numeric: tabular-nums; }
+.seg button[aria-pressed="true"] { border-color: var(--play); color: var(--play); background: color-mix(in srgb, var(--play) 14%, var(--bg)); }
+input[type=range] { width: 100%; accent-color: var(--play); height: 32px; margin: 4px 0 0; }
+.switch { appearance: none; -webkit-appearance: none; flex: none; width: 50px; height: 30px; border-radius: 15px; background: var(--track); position: relative; cursor: pointer; transition: background .15s; margin: 0; }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: var(--fg); transition: transform .15s; }
+.switch:checked { background: var(--play); }
+.switch:checked::after { transform: translateX(20px); }
+.btnrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.btn { height: 38px; padding: 0 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); cursor: pointer; }
+.btn.primary { background: var(--play); color: #00281a; border-color: var(--play); font-weight: 700; }
+.btn.danger { color: var(--rec); border-color: color-mix(in srgb, var(--rec) 50%, var(--line)); }
+.btn:disabled { opacity: .45; cursor: default; }
+.valrow { display: flex; align-items: baseline; gap: 8px; }
+.valrow output { font-size: 22px; }
+.valrow span { color: var(--dim); font-size: 12.5px; }
+#calStatus.ok { color: var(--play); }
+#calStatus.bad { color: var(--arm); }
+kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+
+#toast { position: fixed; z-index: 40; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); transform: translate(-50%, 20px);
+  max-width: min(520px, calc(100% - 32px)); background: #262a34; color: var(--fg); padding: 10px 16px; border-radius: 12px;
+  opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; text-align: center; }
+#toast.show { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="bar">
+    <div class="master" title="Loop cycle">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <circle cx="50" cy="50" r="40" fill="none" stroke="var(--track)" stroke-width="14"/>
+        <circle id="masterArc" cx="50" cy="50" r="40" fill="none" stroke="var(--play)" stroke-width="14" stroke-linecap="round"
+          pathLength="100" stroke-dasharray="100 100" stroke-dashoffset="100" transform="rotate(-90 50 50)"/>
+      </svg>
+      <b id="masterText">No loop yet</b>
+    </div>
+    <select id="input" class="ctl" aria-label="Audio input"></select>
+    <div class="meter" title="Input level"><i id="meterFill"></i></div>
+    <button id="monitorBtn" class="ctl" aria-pressed="false" title="Hear your input through the app">Monitor</button>
+    <button id="videoBtn" class="ctl" aria-pressed="false" title="Record a looping video with each loop">Video</button>
+    <span class="spacer"></span>
+    <button id="settingsBtn" class="ctl">Settings</button>
+    <button id="clearAllBtn" class="ctl danger">Clear all</button>
+  </header>
+  <main id="grid" aria-label="Loops"></main>
+</div>
+
+<div id="start" class="overlay">
+  <div class="start-card">
+    <h1>Video Looper</h1>
+    <p>Tap a square to record, tap again to loop it. The first loop sets the length for the rest.</p>
+    <ul>
+      <li>Use headphones, or the headphone output of your interface, so the speaker doesn't leak into the mic.</li>
+      <li>Electric guitar into a Scarlett: switch the input to INST.</li>
+      <li>Video is optional. Turn it on in the top bar.</li>
+      <li>No mic access here? The demo sound plays a guitar pattern you can loop.</li>
+    </ul>
+    <button id="startBtn" class="big-btn">Start with microphone</button>
+    <button id="demoBtn" class="btn" style="height:46px;border-radius:23px">Try with demo guitar sound</button>
+    <div id="startMsg" role="status"></div>
+  </div>
+</div>
+
+<div id="scrim" class="scrim" hidden></div>
+
+<aside id="settings" class="sheet" hidden aria-label="Settings">
+  <header><h2>Settings</h2><button class="btn primary" id="settingsDone">Done</button></header>
+  <section>
+    <h3>Loops on screen</h3>
+    <div class="seg" id="gridSizes"></div>
+  </section>
+  <section class="row">
+    <div>
+      <h3>Start recording on the beat</h3>
+      <p>New loops wait for the next cycle. Tapping just after it still catches the start.</p>
+    </div>
+    <input type="checkbox" id="quantize" class="switch" aria-label="Start recording on the beat">
+  </section>
+  <section>
+    <h3>Input channel</h3>
+    <div class="seg" id="channels"></div>
+    <p id="channelHint">For a 2-input interface like a Scarlett 2i2: pick the input your guitar is plugged into.</p>
+    <label for="inGain">Input gain <output id="gainOut"></output></label>
+    <input type="range" id="inGain" min="0" max="4" step="0.05">
+  </section>
+  <section>
+    <h3>Latency compensation</h3>
+    <div class="valrow"><output id="latOut"></output><span id="latSrc"></span></div>
+    <input type="range" id="latency" min="0" max="500" step="1" aria-label="Latency compensation in milliseconds">
+    <div class="btnrow">
+      <button class="btn" id="measureBtn">Measure</button>
+      <button class="btn" id="latResetBtn">Use estimate</button>
+    </div>
+    <p id="calStatus">Measure plays 8 clicks and listens for them. Turn the volume up and hold the mic close to the speaker or headphones. Loops go quiet for 5 seconds.</p>
+  </section>
+  <section>
+    <h3>Camera</h3>
+    <div class="seg" id="camera"></div>
+    <label for="vOffset">Video sync offset <output id="vOffOut"></output></label>
+    <input type="range" id="vOffset" min="-300" max="300" step="5">
+    <p>Nudge this if the picture runs ahead of or behind the sound.</p>
+  </section>
+  <section>
+    <label for="outVol" style="margin-top:0">Output volume <output id="outVolOut"></output></label>
+    <input type="range" id="outVol" min="0" max="1.5" step="0.01">
+  </section>
+  <section>
+    <h3>Keyboard and pedals</h3>
+    <p>Keys <kbd>1</kbd>–<kbd>9</kbd> and <kbd>0</kbd> tap loops 1–10, so a Bluetooth keyboard or a pedal that sends number keys works as a foot switch.</p>
+  </section>
+</aside>
+
+<div id="cellMenu" class="sheet small" hidden aria-label="Loop options">
+  <header><h2 id="cmTitle">Loop 1</h2><button class="btn" id="cmClose">Close</button></header>
+  <p id="cmInfo" style="margin:0"></p>
+  <section>
+    <label for="cmVol" style="margin-top:0">Volume <output id="cmVolOut"></output></label>
+    <input type="range" id="cmVol" min="0" max="1.5" step="0.01">
+  </section>
+  <div class="btnrow">
+    <button class="btn primary" id="cmDub">Overdub</button>
+    <button class="btn" id="cmUndo">Undo overdub</button>
+    <button class="btn danger" id="cmClear">Clear loop</button>
+  </div>
+  <p style="margin:0">During overdub, tap the loop to stop adding layers.</p>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<!-- Shims so the engine script below also runs on the main page. It is used as-is when the
+     browser refuses to load it as an AudioWorklet module (Android Files app, some previews). -->
+<script>
+window.__looper = { Proc: null, onmsg: null };
+if (typeof AudioWorkletProcessor === 'undefined') {
+  window.AudioWorkletProcessor = class {
+    constructor() {
+      this.port = { onmessage: null, postMessage: (m) => queueMicrotask(() => window.__looper.onmsg && window.__looper.onmsg(m)) };
+    }
+  };
+  window.registerProcessor = (name, cls) => { window.__looper.Proc = cls; };
+  window.sampleRate = 48000;
+  window.currentFrame = 0;
+}
+</script>
+
+<!-- ===================================================================== audio engine
+     Normally runs on the audio thread. One frame counter is both the input position and the output
+     playhead. Sound recorded at input frame g was played in response to playhead g - latency,
+     so every loop is placed `latency` frames earlier than it was recorded. -->
+<script id="worklet-src">
+{
+const MAXC = 16;
+const EMPTY = 0, ARMED = 1, REC = 2, FIN = 3, PLAY = 4, MUTE = 5, DUB = 6;
+const mod = (a, n) => ((a % n) + n) % n;
+
+class Looper extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    const sr = sampleRate;
+    this.sr = sr;
+    this.recBuf = new Float32Array(sr * 120);
+    this.hist = new Float32Array(sr * 2);
+    this.xin = new Float32Array(128);
+    this.mix = new Float32Array(128);
+    this.cells = [];
+    for (let i = 0; i < MAXC; i++) this.cells.push({ st: EMPTY, data: null, start: 0, cycles: 0, vol: 1, gain: 0, undo: null });
+    this.masterLen = 0; this.masterStart = 0;
+    this.recCell = -1; this.recStart = 0; this.armStart = 0; this.recLen = 0; this.recTarget = 0;
+    this.dubCell = -1;
+    this.pos = 0;
+    this.o = { monitor: false, quantize: true, latency: Math.round(0.1 * sr), channel: 0, inChannels: 1, inGain: 1, demo: false };
+    this.ks = { buf: new Float32Array(Math.ceil(sr / 50)), len: 0, p: 0, next: 0, idx: 0 };
+    this.peak = 0; this.meterAt = 0;
+    this.cal = null;
+    this.port.onmessage = (e) => this.cmd(e.data);
+  }
+
+  send(m) { this.port.postMessage(m); }
+
+  snapshot() {
+    this.send({
+      type: 'state',
+      master: { len: this.masterLen, start: this.masterStart },
+      rec: { cell: this.recCell, start: this.recStart, arm: this.armStart, target: this.recTarget },
+      dub: this.dubCell,
+      cells: this.cells.map(c => ({ st: c.st, start: c.start, len: c.data ? c.data.length : 0, cycles: c.cycles, vol: c.vol, undo: !!c.undo })),
+    });
+  }
+
+  cmd(m) {
+    switch (m.type) {
+      case 'set': Object.assign(this.o, m.values); return;
+      case 'tap': this.tap(m.cell); break;
+      case 'clear': this.clear(m.cell); break;
+      case 'clearAll':
+        if (this.recCell >= 0) this.cancel();
+        this.dubCell = -1;
+        for (let k = 0; k < MAXC; k++) this.clear(k);
+        this.masterLen = 0;
+        break;
+      case 'volume': { const c = this.cells[m.cell]; if (c) c.vol = Math.max(0, Math.min(1.5, m.value)); break; }
+      case 'overdub': this.startDub(m.cell); break;
+      case 'undo': this.undo(m.cell); break;
+      case 'cancelRec': if (this.recCell >= 0) this.cancel(); break;
+      case 'calibrate': if (!this.cal) this.startCal(); return;
+      case 'snapshot': break;
+    }
+    this.snapshot();
+  }
+
+  tap(i) {
+    const c = this.cells[i]; if (!c) return;
+    const g = this.pos; // first frame of the next block: everything before it is in `hist`
+    if (this.dubCell === i) { this.dubCell = -1; c.st = PLAY; return; }
+    switch (c.st) {
+      case EMPTY: {
+        if (this.recCell >= 0) { this.send({ type: 'msg', text: 'Finish the current recording first' }); return; }
+        this.recCell = i;
+        this.send({ type: 'recRequested', cell: i });
+        if (this.masterLen === 0 || !this.o.quantize) {
+          c.st = REC; this.recStart = g; this.recLen = 0;
+          this.send({ type: 'recStarted', cell: i, frame: g });
+        } else {
+          const M = this.masterLen;
+          const since = mod(g - this.o.latency - this.masterStart, M); // how far past the last cycle start the player is
+          const boundary = g - since;
+          const tolerance = Math.min(Math.floor(M / 5), Math.floor(this.sr * 0.35));
+          if (since <= tolerance) {
+            // Tapped a little late: start retroactively at the cycle start.
+            c.st = REC; this.recStart = boundary; this.recLen = since;
+            const H = this.hist.length;
+            for (let k = 0; k < since; k++) this.recBuf[k] = this.hist[mod(boundary + k, H)];
+            this.send({ type: 'recStarted', cell: i, frame: boundary });
+          } else {
+            c.st = ARMED; this.armStart = boundary + M;
+          }
+        }
+        break;
+      }
+      case ARMED: this.cancel(); break;
+      case REC: this.requestStop(); break;
+      case FIN: break;
+      case PLAY: c.st = MUTE; break;
+      case MUTE: c.st = PLAY; break;
+    }
+  }
+
+  requestStop() {
+    const c = this.cells[this.recCell];
+    if (this.masterLen === 0) {
+      if (this.recLen < this.sr / 4) {
+        this.cancel();
+        this.send({ type: 'msg', text: 'Too short. Tap once to start and again to stop.' });
+      } else this.finalize(this.recLen);
+      return;
+    }
+    // Round to whole cycles. Stopping just after a cycle start rounds down.
+    const M = this.masterLen;
+    let cycles = Math.floor(this.recLen / M);
+    const rem = this.recLen - cycles * M;
+    if (cycles === 0 || rem > M / 4) cycles++;
+    cycles = Math.min(cycles, Math.max(1, Math.floor(this.recBuf.length / M)));
+    const target = cycles * M;
+    if (this.recLen >= target) this.finalize(target);
+    else { c.st = FIN; this.recTarget = target; }
+  }
+
+  finalize(len) {
+    const i = this.recCell; if (i < 0) return;
+    const data = this.recBuf.slice(0, len);
+    const f = Math.min(96, len >> 1); // 2 ms fades at the seam, no clicks
+    for (let k = 0; k < f; k++) { const w = k / f; data[k] *= w; data[len - 1 - k] *= w; }
+    const start = this.recStart - this.o.latency;
+    if (this.masterLen === 0) { this.masterLen = len; this.masterStart = start; }
+    const c = this.cells[i];
+    c.data = data; c.start = start; c.cycles = Math.max(1, Math.round(len / this.masterLen));
+    c.st = PLAY; c.gain = c.vol; c.undo = null;
+    this.recCell = -1; this.recLen = 0; this.recTarget = 0;
+    this.send({ type: 'loopReady', cell: i, len, start });
+    this.snapshot();
+  }
+
+  autoStop() {
+    if (this.masterLen === 0) this.finalize(this.recLen);
+    else {
+      const usable = Math.floor(this.recLen / this.masterLen) * this.masterLen;
+      if (usable > 0) this.finalize(usable); else { this.cancel(); this.snapshot(); }
+    }
+    this.send({ type: 'msg', text: 'Maximum loop length reached' });
+  }
+
+  cancel() {
+    const i = this.recCell; if (i < 0) return;
+    this.cells[i].st = EMPTY;
+    this.recCell = -1; this.recLen = 0; this.recTarget = 0;
+    this.send({ type: 'cancelled', cell: i });
+  }
+
+  clear(i) {
+    const c = this.cells[i]; if (!c) return;
+    if (i === this.recCell) this.cancel();
+    if (i === this.dubCell) this.dubCell = -1;
+    const had = !!c.data;
+    c.data = null; c.undo = null; c.st = EMPTY; c.vol = 1; c.gain = 0; c.cycles = 0;
+    if (had) this.send({ type: 'cleared', cell: i });
+    if (this.recCell < 0 && this.cells.every(x => !x.data)) this.masterLen = 0;
+  }
+
+  startDub(i) {
+    const c = this.cells[i];
+    if (!c || !c.data || !(c.st === PLAY || c.st === MUTE)) return;
+    if (this.dubCell >= 0) this.cells[this.dubCell].st = PLAY;
+    c.undo = c.data.slice();
+    c.st = DUB; this.dubCell = i;
+  }
+
+  undo(i) {
+    const c = this.cells[i];
+    if (!c || !c.undo) return;
+    if (this.dubCell === i) { this.dubCell = -1; c.st = PLAY; }
+    c.data = c.undo; c.undo = null;
+  }
+
+  startCal() {
+    const sr = this.sr;
+    const lead = Math.round(sr * 0.4), interval = Math.round(sr * 0.5), count = 9, tail = Math.round(sr * 0.5);
+    const total = lead + count * interval + tail;
+    // Slot 4 stays silent: if we 'hear' a click there, the room is too noisy to trust the result.
+    this.cal = { t0: this.pos, lead, interval, count, silent: 4, total, buf: new Float32Array(total), burst: Math.round(sr * 0.002) };
+  }
+
+  calibrate(g0, n, xin, mix) {
+    const c = this.cal;
+    for (let i = 0; i < n; i++) {
+      const rel = g0 + i - c.t0;
+      if (rel < 0) continue;
+      if (rel >= c.total) { this.finishCal(); return; }
+      c.buf[rel] = xin[i];
+      const cr = rel - c.lead;
+      if (cr >= 0) {
+        const k = Math.floor(cr / c.interval), j = cr - k * c.interval;
+        if (k < c.count && k !== c.silent && j < c.burst) {
+          const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * j / c.burst);
+          mix[i] = 0.9 * w * Math.sin(2 * Math.PI * 2000 * j / this.sr);
+        }
+      }
+    }
+  }
+
+  finishCal() {
+    const c = this.cal; this.cal = null;
+    const sr = this.sr, buf = c.buf, lats = [];
+    let ns = 0;
+    for (let i = 0; i < c.lead; i++) ns += buf[i] * buf[i];
+    const noise = Math.sqrt(ns / c.lead);
+    for (let k = 0; k < c.count; k++) {
+      const cf = c.lead + k * c.interval;
+      let pk = 0, pi = -1;
+      for (let i = cf; i < cf + c.interval && i < buf.length; i++) { const v = Math.abs(buf[i]); if (v > pk) { pk = v; pi = i; } }
+      if (pi < 0 || pk < Math.max(0.01, noise * 6)) continue;
+      const th = pk * 0.35;
+      let on = pi;
+      for (let i = cf; i <= pi; i++) if (Math.abs(buf[i]) >= th) { on = i; break; }
+      // The click must rise out of quiet: reject steady sounds that were already there.
+      let pre = 0;
+      const w1 = Math.max(0, on - 2 * c.burst), w0 = Math.max(0, w1 - Math.round(sr * 0.01));
+      for (let i = w0; i < w1; i++) pre = Math.max(pre, Math.abs(buf[i]));
+      if (on - cf < sr * 0.001 || pre > th * 0.5) continue;
+      if (k === c.silent) { this.send({ type: 'calibrated', ok: false, heard: 0, inconsistent: true }); return; }
+      lats.push(on - cf);
+    }
+    if (lats.length < 5) { this.send({ type: 'calibrated', ok: false, heard: lats.length }); return; }
+    lats.sort((a, b) => a - b);
+    const med = lats[lats.length >> 1];
+    const agree = lats.filter(v => Math.abs(v - med) <= sr * 0.004).length;
+    if (agree < 5) this.send({ type: 'calibrated', ok: false, heard: lats.length, inconsistent: true });
+    else this.send({ type: 'calibrated', ok: true, frames: med });
+  }
+
+  /** Demo input: a plucked-string arpeggio (Karplus-Strong), so the looper works without a mic. */
+  pluck(g) {
+    const k = this.ks;
+    if (g >= k.next) {
+      const notes = [82.41, 123.47, 164.81, 207.65, 246.94, 207.65, 164.81, 123.47]; // E major, low to high and back
+      const f = notes[k.idx++ % notes.length];
+      k.len = Math.round(this.sr / f);
+      for (let i = 0; i < k.len; i++) k.buf[i] = Math.random() * 2 - 1;
+      k.p = 0;
+      k.next = (k.next || g) + Math.round(this.sr * 0.25);
+      if (k.next <= g) k.next = g + Math.round(this.sr * 0.25);
+    }
+    if (!k.len) return 0;
+    const p = k.p, q = p + 1 < k.len ? p + 1 : 0;
+    const y = k.buf[p];
+    k.buf[p] = 0.996 * 0.5 * (k.buf[p] + k.buf[q]);
+    k.p = q;
+    return y * 0.35;
+  }
+
+  process(inputs, outputs) {
+    const out = outputs[0];
+    const n = out[0].length;
+    if (this.xin.length < n) { this.xin = new Float32Array(n); this.mix = new Float32Array(n); }
+    const g0 = currentFrame;
+    const xin = this.xin, mix = this.mix, o = this.o;
+    const inp = inputs[0] || [];
+    const a = inp[0], b = inp[1];
+    const H = this.hist.length;
+
+    // ---- input ----
+    let pk = this.peak;
+    for (let i = 0; i < n; i++) {
+      let x = 0;
+      if (o.demo) x = this.pluck(g0 + i);
+      else if (a) {
+        if (b && o.inChannels > 1) x = o.channel === 0 ? a[i] : o.channel === 1 ? b[i] : 0.5 * (a[i] + b[i]);
+        else x = a[i];
+      }
+      x *= o.inGain;
+      xin[i] = x;
+      const ax = x < 0 ? -x : x; if (ax > pk) pk = ax;
+      this.hist[(g0 + i) % H] = x;
+    }
+    this.peak = pk;
+
+    // ---- recording ----
+    if (this.recCell >= 0) {
+      const c = this.cells[this.recCell];
+      for (let i = 0; i < n && this.recCell >= 0; i++) {
+        const g = g0 + i;
+        if (c.st === ARMED && g >= this.armStart) {
+          c.st = REC; this.recStart = g; this.recLen = 0;
+          this.send({ type: 'recStarted', cell: this.recCell, frame: g });
+          this.snapshot();
+        }
+        if (c.st === REC || c.st === FIN) {
+          this.recBuf[this.recLen++] = xin[i];
+          if (c.st === FIN && this.recLen >= this.recTarget) this.finalize(this.recTarget);
+          else if (this.recLen >= this.recBuf.length) this.autoStop();
+        }
+      }
+    }
+
+    // ---- overdub: write where the player heard the loop ----
+    if (this.dubCell >= 0) {
+      const c = this.cells[this.dubCell], d = c.data, L = d.length;
+      let p = mod(g0 - o.latency - c.start, L);
+      for (let i = 0; i < n; i++) { d[p] += xin[i]; if (++p >= L) p = 0; }
+    }
+
+    // ---- playback ----
+    mix.fill(0, 0, n);
+    if (!this.cal) {
+      for (let k = 0; k < MAXC; k++) {
+        const c = this.cells[k], d = c.data;
+        if (!d) continue;
+        const target = (c.st === PLAY || c.st === DUB) ? c.vol : 0;
+        let gn = c.gain;
+        if (gn === 0 && target === 0) continue;
+        const L = d.length;
+        let p = mod(g0 - c.start, L);
+        for (let i = 0; i < n; i++) {
+          gn += (target - gn) * 0.003; // ~7 ms ramp for mute/unmute/volume
+          mix[i] += d[p] * gn;
+          if (++p >= L) p = 0;
+        }
+        if (target === 0 && gn < 1e-4) gn = 0;
+        c.gain = gn;
+      }
+      if (o.monitor) for (let i = 0; i < n; i++) mix[i] += xin[i];
+    } else {
+      this.calibrate(g0, n, xin, mix);
+    }
+
+    const o0 = out[0];
+    for (let i = 0; i < n; i++) { const y = mix[i]; o0[i] = y > 1 ? 1 : y < -1 ? -1 : y; }
+    for (let ch = 1; ch < out.length; ch++) out[ch].set(o0);
+
+    this.pos = g0 + n;
+    if (this.pos - this.meterAt >= 2048) {
+      this.send({ type: 'meter', peak: this.peak });
+      this.peak = 0; this.meterAt = this.pos;
+    }
+    return true;
+  }
+}
+registerProcessor('looper', Looper);
+}
+</script>
+
+<script>
+(() => {
+'use strict';
+
+const $ = (s) => document.querySelector(s);
+const MAXC = 16;
+const GRID_SIZES = [1, 2, 3, 4, 6, 8, 9, 12, 16];
+const ST = ['empty', 'armed', 'recording', 'finishing', 'playing', 'muted', 'overdub'];
+const mod = (a, n) => ((a % n) + n) % n;
+
+// ------------------------------------------------------------------ settings
+
+const DEFAULTS = {
+  gridSize: 6, quantize: true, monitor: false, video: false, front: true,
+  latencyMs: null, // null = use the estimate
+  channel: 0, inGain: 1, outVol: 1, videoOffsetMs: 0, inputId: '',
+};
+let settings = loadSettings();
+function loadSettings() {
+  try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('videolooper.settings') || '{}') }; }
+  catch { return { ...DEFAULTS }; }
+}
+function saveSettings() {
+  try { localStorage.setItem('videolooper.settings', JSON.stringify(settings)); } catch {}
+}
+if (!GRID_SIZES.includes(settings.gridSize)) settings.gridSize = DEFAULTS.gridSize;
+
+// ------------------------------------------------------------------ state
+
+let ctx = null, node = null, src = null, micStream = null, outGain = null;
+let sr = 48000, inChannels = 1, estLatencyMs = 100, demoMode = false, engineInput = null, compatBufferSec = 0;
+const DEMO = '__demo';
+let engine = {
+  master: { len: 0, start: 0 },
+  rec: { cell: -1, start: 0, arm: 0, target: 0 },
+  dub: -1,
+  cells: Array.from({ length: MAXC }, () => ({ state: 'empty', start: 0, len: 0, cycles: 0, vol: 1, undo: false })),
+};
+let peakShown = 0, knownInputs = new Set();
+let camStream = null, videoOn = false, take = null, clipSeq = 0;
+const clips = new Map(); // cell -> clip
+let menuCell = -1;
+
+const grid = $('#grid');
+let cellEls = [];
+const preview = document.createElement('video');
+preview.muted = true; preview.playsInline = true; preview.autoplay = true;
+
+const latencyMs = () => settings.latencyMs ?? estLatencyMs;
+
+// ------------------------------------------------------------------ helpers
+
+let toastTimer = 0;
+function toast(text) {
+  const t = $('#toast');
+  t.textContent = text; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+function send(msg) { if (node) node.port.postMessage(msg); }
+
+function pushSettings() {
+  send({ type: 'set', values: {
+    monitor: settings.monitor, quantize: settings.quantize,
+    latency: Math.round(latencyMs() * sr / 1000),
+    channel: settings.channel, inChannels, inGain: settings.inGain, demo: demoMode,
+  } });
+  if (outGain) outGain.gain.setTargetAtTime(settings.outVol, ctx.currentTime, 0.02);
+}
+
+/** Context time of the sample you are hearing right now, in frames. */
+function audibleFrame() {
+  const ts = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;
+  if (ts && ts.contextTime > 0 && ts.performanceTime > 0) {
+    return (ts.contextTime + (performance.now() - ts.performanceTime) / 1000) * sr;
+  }
+  return (ctx.currentTime - (ctx.outputLatency || ctx.baseLatency || 0)) * sr;
+}
+
+/** performance.now() at which frame f is (or was) heard. */
+function perfOfFrame(f) {
+  const ts = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;
+  if (ts && ts.contextTime > 0 && ts.performanceTime > 0) {
+    return ts.performanceTime + (f / sr - ts.contextTime) * 1000;
+  }
+  return performance.now() + (f / sr - ctx.currentTime + (ctx.outputLatency || 0)) * 1000;
+}
+
+/** Splits the screen between `count` cells, keeping cells close to `aspect`. */
+function gridShape(count, w, h, aspect) {
+  if (count <= 1 || w <= 0 || h <= 0) return [1, 1];
+  let best = [1, count], bestScore = Infinity;
+  for (let cols = 1; cols <= count; cols++) {
+    const rows = Math.ceil(count / cols);
+    const empty = rows * cols - count;
+    if (empty >= cols) continue;
+    const a = (w / cols) / (h / rows);
+    const score = Math.abs(Math.log(a / aspect)) + 0.35 * empty;
+    if (score < bestScore) { bestScore = score; best = [cols, rows]; }
+  }
+  return best;
+}
+
+// ------------------------------------------------------------------ start-up
+
+$('#startBtn').addEventListener('click', () => start(true));
+$('#demoBtn').addEventListener('click', () => start(false));
+
+async function start(useMic) {
+  const btns = [$('#startBtn'), $('#demoBtn')], msg = $('#startMsg');
+  btns.forEach(b => b.disabled = true); msg.textContent = '';
+  try {
+    if (!node) {
+      ctx = ctx || new AudioContext({ latencyHint: 'interactive' });
+      ctx.resume();
+      sr = ctx.sampleRate;
+      outGain = ctx.createGain();
+      outGain.gain.value = settings.outVol;
+      outGain.connect(ctx.destination);
+      await createEngine();
+    }
+    if (useMic) {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('No microphone access on this page. Open the file in Chrome itself, or use the demo sound.');
+      await openInput(settings.inputId);
+    } else {
+      startDemo();
+    }
+    await ctx.resume();
+    pushSettings();
+    send({ type: 'snapshot' });
+    $('#start').hidden = true;
+    keepAwake();
+    await refreshInputs(false);
+    navigator.mediaDevices?.addEventListener('devicechange', () => refreshInputs(true));
+    setTimeout(updateEstimate, 1500);
+    if (settings.video) await enableVideo();
+    syncControls();
+    requestAnimationFrame(frame);
+  } catch (e) {
+    console.error(e);
+    msg.textContent = e && e.name === 'NotAllowedError'
+      ? 'Microphone access was blocked. Allow it in the site settings, or try the demo sound.'
+      : e && e.name === 'NotFoundError'
+        ? 'No microphone is available in this view. Open the file in Chrome, or try the demo sound.'
+        : (e.message || String(e));
+    btns.forEach(b => b.disabled = false);
+  }
+}
+
+/** Tries the low-latency AudioWorklet first; falls back to running the engine on the page. */
+async function createEngine() {
+  const code = $('#worklet-src').textContent;
+  const urls = [];
+  try { urls.push(URL.createObjectURL(new Blob([code], { type: 'application/javascript' }))); } catch {}
+  urls.push('data:application/javascript;base64,' + btoa(unescape(encodeURIComponent(code))));
+  if (ctx.audioWorklet && window.AudioWorkletNode) {
+    for (const url of urls) {
+      try {
+        await ctx.audioWorklet.addModule(url);
+        node = new AudioWorkletNode(ctx, 'looper', {
+          numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
+          channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'discrete',
+        });
+        node.port.onmessage = (e) => onEngine(e.data);
+        node.connect(outGain);
+        engineInput = node;
+        return;
+      } catch (e) {
+        console.warn('AudioWorklet module did not load from', url.slice(0, 5), e);
+      }
+    }
+  }
+  // Compatibility mode: same engine, run on the page by a ScriptProcessorNode.
+  const Proc = window.__looper.Proc;
+  if (!Proc) throw new Error('The audio engine could not start in this browser.');
+  window.sampleRate = sr;
+  const proc = new Proc();
+  window.__looper.onmsg = onEngine;
+  const BUF = 1024;
+  const spn = ctx.createScriptProcessor(BUF, 2, 2);
+  spn.onaudioprocess = (e) => {
+    const ib = e.inputBuffer, ob = e.outputBuffer;
+    // Output frame g plays at context time g / sr, as in the worklet.
+    window.currentFrame = Math.round(e.playbackTime * sr);
+    proc.process([[ib.getChannelData(0), ib.getChannelData(1)]], [[ob.getChannelData(0), ob.getChannelData(1)]]);
+  };
+  spn.connect(outGain);
+  engineInput = spn;
+  compatBufferSec = 2 * BUF / sr;
+  node = { port: { postMessage: (m) => proc.port.onmessage({ data: m }) } };
+  toast('Compatibility mode: audio works, with a little more delay.');
+}
+
+function startDemo() {
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (src) { src.disconnect(); src = null; }
+  demoMode = true; inChannels = 1;
+  send({ type: 'cancelRec' });
+  pushSettings(); syncChannelHint();
+  if ($('#input').options.length) $('#input').value = DEMO;
+}
+
+async function openInput(id) {
+  const audio = {
+    echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+    channelCount: { ideal: 2 }, latency: { ideal: 0 },
+  };
+  if (id) audio.deviceId = { exact: id };
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (src) { src.disconnect(); src = null; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio });
+  } catch (e) {
+    if (!id) throw e;
+    delete audio.deviceId;
+    stream = await navigator.mediaDevices.getUserMedia({ audio });
+    settings.inputId = ''; saveSettings();
+    toast('That input is not available. Using the default input.');
+  }
+  micStream = stream;
+  demoMode = false;
+  src = ctx.createMediaStreamSource(stream);
+  src.connect(engineInput);
+  const track = stream.getAudioTracks()[0];
+  const st = track.getSettings();
+  inChannels = st.channelCount || 1;
+  track.addEventListener('ended', () => { toast('Input disconnected. Back to the default input.'); selectInput(''); });
+  send({ type: 'cancelRec' });
+  updateEstimate();
+  pushSettings();
+  syncChannelHint();
+}
+
+function updateEstimate() {
+  if (!ctx) return;
+  const st = micStream?.getAudioTracks()[0]?.getSettings() || {};
+  const inLat = typeof st.latency === 'number' ? st.latency : 0.02;
+  estLatencyMs = Math.round(((ctx.baseLatency || 0) + (ctx.outputLatency || 0) + inLat + compatBufferSec) * 1000);
+  if (settings.latencyMs == null) pushSettings();
+  syncControls();
+}
+
+async function selectInput(id) {
+  settings.inputId = id; saveSettings();
+  try { await openInput(id); } catch (e) { toast('Could not open that input: ' + e.message); }
+  $('#input').value = demoMode ? DEMO : settings.inputId;
+}
+
+async function refreshInputs(announce) {
+  const devices = navigator.mediaDevices?.enumerateDevices
+    ? (await navigator.mediaDevices.enumerateDevices().catch(() => [])).filter(d => d.kind === 'audioinput') : [];
+  const sel = $('#input');
+  sel.innerHTML = '';
+  const demo = document.createElement('option');
+  demo.value = DEMO; demo.textContent = 'Demo guitar (built-in)';
+  sel.appendChild(demo);
+  const def = document.createElement('option');
+  def.value = ''; def.textContent = navigator.mediaDevices?.getUserMedia ? 'Microphone (default)' : 'Microphone (not available here)';
+  def.disabled = !navigator.mediaDevices?.getUserMedia;
+  sel.appendChild(def);
+  devices.forEach((d, i) => {
+    if (!d.deviceId || d.deviceId === 'default' || d.deviceId === 'communications') return;
+    const o = document.createElement('option');
+    o.value = d.deviceId; o.textContent = d.label || `Input ${i + 1}`;
+    sel.appendChild(o);
+  });
+  const ids = new Set(devices.map(d => d.deviceId));
+  if (!demoMode && settings.inputId && !ids.has(settings.inputId)) {
+    toast('Input disconnected. Back to the default input.');
+    await selectInput('');
+  }
+  if (announce && !demoMode) {
+    // A newly plugged-in interface becomes the input automatically.
+    const added = devices.find(d => !knownInputs.has(d.deviceId) && d.deviceId !== 'default' && d.deviceId !== 'communications');
+    if (added) { await selectInput(added.deviceId); toast('Input: ' + (added.label || 'new device')); }
+  }
+  knownInputs = ids;
+  sel.value = demoMode ? DEMO : settings.inputId;
+}
+$('#input').addEventListener('change', async (e) => {
+  if (e.target.value === DEMO) { startDemo(); return; }
+  await selectInput(e.target.value);
+  if (!demoMode) refreshInputs(false); // device names become visible once the mic is allowed
+});
+
+let wakeLock = null;
+async function keepAwake() {
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && ctx) { keepAwake(); ctx.resume(); }
+});
+
+// ------------------------------------------------------------------ engine events
+
+function onEngine(m) {
+  switch (m.type) {
+    case 'state': {
+      engine.master = m.master; engine.rec = m.rec; engine.dub = m.dub;
+      engine.cells = m.cells.map(c => ({ state: ST[c.st], start: c.start, len: c.len, cycles: c.cycles, vol: c.vol, undo: c.undo }));
+      for (const cell of [...clips.keys()]) if (!engine.cells[cell].len) removeClip(cell);
+      placeMedia();
+      if (menuCell >= 0) syncCellMenu();
+      break;
+    }
+    case 'meter': peakShown = Math.max(m.peak, peakShown); break;
+    case 'recRequested': if (videoOn && camStream) startTake(m.cell); break;
+    case 'recStarted':
+      if (take && take.cell === m.cell) take.audioStart = perfOfFrame(m.frame) - latencyMs();
+      break;
+    case 'loopReady': {
+      const t = take;
+      if (t && t.cell === m.cell) {
+        take = null;
+        t.len = m.len;
+        setTimeout(() => { if (t.rec.state !== 'inactive') t.rec.stop(); }, 350); // a little extra footage
+      }
+      break;
+    }
+    case 'cancelled':
+      if (take && take.cell === m.cell) {
+        take.cancelled = true;
+        if (take.rec.state !== 'inactive') take.rec.stop();
+        take = null;
+      }
+      break;
+    case 'cleared': removeClip(m.cell); break;
+    case 'msg': toast(m.text); break;
+    case 'calibrated': onCalibrated(m); break;
+  }
+}
+
+// ------------------------------------------------------------------ video
+
+function recorderOptions() {
+  const types = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp8', 'video/webm'];
+  const mimeType = types.find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t));
+  const o = { videoBitsPerSecond: 2_000_000, videoKeyFrameIntervalDuration: 500 };
+  if (mimeType) o.mimeType = mimeType;
+  return o;
+}
+
+async function enableVideo() {
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: settings.front ? 'user' : 'environment', width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 30 } },
+    });
+    preview.srcObject = camStream;
+    preview.classList.toggle('mirror', settings.front);
+    preview.play().catch(() => {});
+    videoOn = true;
+    settings.video = true;
+  } catch (e) {
+    videoOn = false; settings.video = false;
+    toast(e && e.name === 'NotAllowedError' ? 'Camera access was blocked.' : 'Camera not available: ' + e.message);
+  }
+  saveSettings(); syncControls(); layoutGrid(); placeMedia();
+}
+
+function disableVideo() {
+  if (take) { take.cancelled = true; if (take.rec.state !== 'inactive') take.rec.stop(); take = null; }
+  camStream?.getTracks().forEach(t => t.stop());
+  camStream = null; preview.srcObject = null;
+  videoOn = false; settings.video = false;
+  saveSettings(); syncControls(); layoutGrid(); placeMedia();
+}
+
+function startTake(cell) {
+  if (take || !camStream || !window.MediaRecorder) return;
+  let rec;
+  try { rec = new MediaRecorder(camStream, recorderOptions()); }
+  catch { try { rec = new MediaRecorder(camStream); } catch (e) { toast('Video recording is not supported here'); return; } }
+  const t = { cell, rec, chunks: [], startPerf: 0, requestedPerf: performance.now(), audioStart: null, len: 0, cancelled: false, mirror: settings.front };
+  rec.ondataavailable = (e) => { if (e.data && e.data.size) t.chunks.push(e.data); };
+  rec.onstart = () => { t.startPerf = performance.now(); };
+  rec.onstop = () => finishTake(t);
+  rec.onerror = () => { t.cancelled = true; toast('Video recording failed'); };
+  take = t;
+  rec.start(1000);
+}
+
+function finishTake(t) {
+  if (take === t) take = null;
+  const c = engine.cells[t.cell];
+  const alive = c && c.len > 0 && (c.state === 'playing' || c.state === 'muted' || c.state === 'overdub');
+  if (t.cancelled || t.audioStart == null || !t.len || !alive || !t.chunks.length) return;
+  const startPerf = t.startPerf || t.requestedPerf;
+  const blob = new Blob(t.chunks, { type: t.rec.mimeType || 'video/webm' });
+  const url = URL.createObjectURL(blob);
+  const el = document.createElement('video');
+  el.muted = true; el.playsInline = true; el.preload = 'auto'; el.loop = false;
+  if (t.mirror) el.classList.add('mirror');
+  const clip = { id: ++clipSeq, cell: t.cell, url, el, start: (t.audioStart - startPerf) / 1000, lenSec: t.len / sr, dur: Infinity, ready: false };
+  el.addEventListener('loadedmetadata', () => fixDuration(clip), { once: true });
+  setTimeout(() => { clip.ready = true; }, 2000); // fallback if the browser never reports a duration
+  el.src = url;
+  removeClip(t.cell);
+  clips.set(t.cell, clip);
+  el.play().catch(() => {});
+  placeMedia();
+}
+
+/** Recorded WebM files often report an infinite duration until you seek to the end once. */
+function fixDuration(clip) {
+  const el = clip.el;
+  if (isFinite(el.duration)) { clip.dur = el.duration; clip.ready = true; return; }
+  const done = () => {
+    el.removeEventListener('durationchange', done);
+    if (isFinite(el.duration)) clip.dur = el.duration;
+    el.currentTime = Math.max(0, clip.start);
+    clip.ready = true;
+  };
+  el.addEventListener('durationchange', done);
+  el.currentTime = 1e7;
+}
+
+function removeClip(cell) {
+  const clip = clips.get(cell);
+  if (!clip) return;
+  clips.delete(cell);
+  clip.el.pause();
+  clip.el.removeAttribute('src'); clip.el.load();
+  clip.el.remove();
+  URL.revokeObjectURL(clip.url);
+}
+
+/** Keeps each clip locked to its audio loop. Audio is the master clock. */
+function syncVideos(aFrame) {
+  for (const [cell, clip] of clips) {
+    if (!clip.ready) continue;
+    const c = engine.cells[cell];
+    if (!c.len) continue;
+    const el = clip.el;
+    const p = mod(aFrame - c.start, c.len) / sr;
+    const end = (isFinite(clip.dur) ? clip.dur : clip.start + clip.lenSec) - 0.05;
+    const want = clip.start + p + settings.videoOffsetMs / 1000;
+    const target = Math.min(Math.max(want, 0), Math.max(0, end));
+    if (el.seeking) continue;
+    const diff = target - el.currentTime;
+    if (target !== want) {
+      // Outside the recorded footage (camera started late or stopped early): hold the nearest frame.
+      if (!el.paused) el.pause();
+      if (Math.abs(diff) > 0.04) el.currentTime = target;
+      continue;
+    }
+    if (el.paused) el.play().catch(() => {});
+    if (Math.abs(diff) > 0.1) {
+      el.currentTime = target;
+      if (el.playbackRate !== 1) el.playbackRate = 1;
+    } else {
+      // Small drift: speed up or slow down slightly instead of jumping.
+      const rate = 1 + Math.max(-0.15, Math.min(0.15, diff * 3));
+      if (Math.abs(rate - el.playbackRate) > 0.01) el.playbackRate = rate;
+    }
+  }
+}
+
+// ------------------------------------------------------------------ grid
+
+function buildGrid() {
+  grid.innerHTML = '';
+  cellEls = [];
+  for (let i = 0; i < settings.gridSize; i++) {
+    const el = document.createElement('div');
+    el.className = 'cell s-empty';
+    el.setAttribute('role', 'button');
+    el.setAttribute('aria-label', `Loop ${i + 1}`);
+    el.innerHTML = `
+      <div class="media"></div><div class="shade"></div>
+      <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
+        <circle class="track" cx="50" cy="50" r="44" pathLength="100"/>
+        <circle class="arc" cx="50" cy="50" r="44" pathLength="100" transform="rotate(-90 50 50)"/>
+      </svg>
+      <span class="num">${i + 1}</span>
+      <div class="label"><span class="big">+</span><span class="txt">Tap to record</span><span class="badge"></span></div>
+      <button class="more" aria-label="Loop ${i + 1} options">⋯</button>`;
+    // Act on touch-down, not release: timing is everything in a looper.
+    el.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('.more')) return;
+      if (e.button > 0) return;
+      e.preventDefault();
+      tap(i);
+      el.classList.add('pressed');
+      setTimeout(() => el.classList.remove('pressed'), 90);
+    });
+    el.querySelector('.more').addEventListener('click', (e) => { e.stopPropagation(); openCellMenu(i); });
+    const ui = {
+      el, media: el.querySelector('.media'), arc: el.querySelector('.arc'),
+      big: el.querySelector('.big'), txt: el.querySelector('.txt'), badge: el.querySelector('.badge'),
+      cls: '', badgeText: '', mediaEl: null,
+    };
+    cellEls.push(ui);
+    grid.appendChild(el);
+  }
+  layoutGrid();
+  placeMedia();
+}
+
+function layoutGrid() {
+  const r = grid.getBoundingClientRect();
+  const [cols, rows] = gridShape(settings.gridSize, r.width, r.height, videoOn ? 16 / 9 : 1);
+  grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  grid.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
+}
+new ResizeObserver(layoutGrid).observe(grid);
+
+function tap(i) {
+  if (!ctx) return;
+  send({ type: 'tap', cell: i });
+}
+
+function isCapturing(i) {
+  const s = engine.cells[i]?.state;
+  return engine.rec.cell === i && (s === 'armed' || s === 'recording' || s === 'finishing');
+}
+
+function placeMedia() {
+  cellEls.forEach((ui, i) => {
+    let want = null;
+    if (videoOn) {
+      const clip = clips.get(i);
+      if (clip) want = clip.el;
+      else if (camStream && isCapturing(i)) want = preview;
+    }
+    if (ui.mediaEl !== want) {
+      ui.media.replaceChildren(...(want ? [want] : []));
+      ui.mediaEl = want;
+      if (want) want.play().catch(() => {});
+    }
+  });
+}
+
+// ------------------------------------------------------------------ animation frame
+
+function frame() {
+  requestAnimationFrame(frame);
+  if (!ctx) return;
+  const nowF = ctx.currentTime * sr;
+  const aF = audibleFrame();
+  const M = engine.master;
+
+  // master clock
+  const mPhase = M.len ? mod(aF - M.start, M.len) / M.len : 0;
+  $('#masterArc').style.strokeDashoffset = String(100 - mPhase * 100);
+  const mt = $('#masterText');
+  const text = ctx.state !== 'running' ? 'Audio paused' : M.len ? `${(M.len / sr).toFixed(2)} s` : 'No loop yet';
+  if (mt.textContent !== text) { mt.textContent = text; mt.classList.toggle('off', ctx.state !== 'running'); }
+
+  // input meter
+  const db = peakShown > 0 ? 20 * Math.log10(peakShown) : -90;
+  const fill = $('#meterFill');
+  fill.style.width = `${Math.max(0, Math.min(1, (db + 60) / 60)) * 100}%`;
+  fill.className = db > -1 ? 'clip' : db > -9 ? 'hot' : '';
+  peakShown *= 0.88;
+
+  for (let i = 0; i < cellEls.length; i++) {
+    const ui = cellEls[i], c = engine.cells[i];
+    const st = c.state;
+    let phase = 0, badge = '';
+    if (c.len && (st === 'playing' || st === 'muted' || st === 'overdub')) {
+      phase = mod(aF - c.start, c.len) / c.len;
+      badge = st === 'muted' ? 'Muted' : st === 'overdub' ? '● DUB' : c.cycles > 1 ? `×${c.cycles}` : '';
+    } else if (st === 'armed' && engine.rec.cell === i) {
+      phase = M.len ? 1 - Math.max(0, engine.rec.arm - nowF) / M.len : 0;
+      badge = 'Starts on the beat';
+    } else if (st === 'recording' && engine.rec.cell === i) {
+      const recLen = Math.max(0, nowF - engine.rec.start);
+      if (M.len) { phase = (recLen % M.len) / M.len; badge = `● REC ×${Math.floor(recLen / M.len) + 1}`; }
+      else { phase = (recLen / sr % 4) / 4; badge = `● REC ${(recLen / sr).toFixed(1)} s`; }
+    } else if (st === 'finishing' && engine.rec.cell === i) {
+      phase = engine.rec.target ? Math.min(1, (nowF - engine.rec.start) / engine.rec.target) : 1;
+      badge = 'Finishing…';
+    }
+    const cls = `cell s-${st}${ui.mediaEl ? ' has-media' : ''}`;
+    if (ui.cls !== cls) {
+      ui.el.className = cls; ui.cls = cls;
+      const empty = st === 'empty';
+      ui.big.hidden = !empty; ui.txt.hidden = !empty;
+    }
+    if (ui.badgeText !== badge) { ui.badge.textContent = badge; ui.badgeText = badge; }
+    ui.arc.style.strokeDashoffset = String(100 - phase * 100);
+  }
+
+  if (videoOn) syncVideos(aF);
+}
+
+// ------------------------------------------------------------------ top bar
+
+$('#monitorBtn').addEventListener('click', () => {
+  settings.monitor = !settings.monitor; saveSettings(); pushSettings(); syncControls();
+  if (settings.monitor) toast('Monitoring on. Use headphones to avoid feedback.');
+});
+$('#videoBtn').addEventListener('click', () => { videoOn ? disableVideo() : enableVideo(); });
+$('#settingsBtn').addEventListener('click', () => openSheet('#settings'));
+let clearArmed = 0;
+$('#clearAllBtn').addEventListener('click', () => {
+  const b = $('#clearAllBtn');
+  if (Date.now() - clearArmed < 3000) {
+    send({ type: 'clearAll' });
+    clearArmed = 0; b.textContent = 'Clear all';
+    toast('All loops cleared');
+  } else {
+    clearArmed = Date.now(); b.textContent = 'Tap again to clear';
+    setTimeout(() => { if (Date.now() - clearArmed >= 2900) b.textContent = 'Clear all'; }, 3000);
+  }
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.repeat || e.target.closest('input, select')) return;
+  const k = e.key === '0' ? 9 : '123456789'.indexOf(e.key);
+  if (k >= 0 && k < settings.gridSize) { e.preventDefault(); tap(k); }
+});
+
+// ------------------------------------------------------------------ sheets
+
+function openSheet(sel) {
+  $('#scrim').hidden = false;
+  $(sel).hidden = false;
+}
+function closeSheets() {
+  $('#scrim').hidden = true;
+  $('#settings').hidden = true;
+  $('#cellMenu').hidden = true;
+  menuCell = -1;
+}
+$('#scrim').addEventListener('click', closeSheets);
+$('#settingsDone').addEventListener('click', closeSheets);
+$('#cmClose').addEventListener('click', closeSheets);
+
+function segmented(container, labels, isOn, onPick) {
+  const box = $(container);
+  box.innerHTML = '';
+  labels.forEach((label, i) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.addEventListener('click', () => { onPick(i); syncControls(); });
+    box.appendChild(b);
+  });
+  box._sync = () => [...box.children].forEach((b, i) => b.setAttribute('aria-pressed', String(isOn(i))));
+}
+
+segmented('#gridSizes', GRID_SIZES.map(String), (i) => GRID_SIZES[i] === settings.gridSize, (i) => {
+  const old = settings.gridSize;
+  settings.gridSize = GRID_SIZES[i]; saveSettings();
+  for (let c = settings.gridSize; c < old; c++) send({ type: 'clear', cell: c });
+  buildGrid();
+});
+segmented('#channels', ['Input 1', 'Input 2', 'Both'], (i) => i === settings.channel, (i) => {
+  settings.channel = i; saveSettings(); pushSettings();
+});
+segmented('#camera', ['Front', 'Back'], (i) => (i === 0) === settings.front, async (i) => {
+  const front = i === 0;
+  if (front === settings.front) return;
+  settings.front = front; saveSettings();
+  if (videoOn) { disableVideo(); await enableVideo(); }
+});
+
+$('#quantize').addEventListener('change', (e) => { settings.quantize = e.target.checked; saveSettings(); pushSettings(); });
+$('#inGain').addEventListener('input', (e) => { settings.inGain = +e.target.value; saveSettings(); pushSettings(); syncControls(); });
+$('#latency').addEventListener('input', (e) => { settings.latencyMs = +e.target.value; saveSettings(); pushSettings(); syncControls(); });
+$('#latResetBtn').addEventListener('click', () => { settings.latencyMs = null; saveSettings(); updateEstimate(); setCal('', ''); });
+$('#vOffset').addEventListener('input', (e) => { settings.videoOffsetMs = +e.target.value; saveSettings(); syncControls(); });
+$('#outVol').addEventListener('input', (e) => { settings.outVol = +e.target.value; saveSettings(); pushSettings(); syncControls(); });
+
+$('#measureBtn').addEventListener('click', () => {
+  if (!ctx) return;
+  $('#measureBtn').disabled = true;
+  setCal('Listening… stay quiet for 5 seconds.', '');
+  send({ type: 'calibrate' });
+});
+function setCal(text, cls) {
+  const p = $('#calStatus');
+  if (text) p.textContent = text;
+  p.className = cls;
+}
+function onCalibrated(m) {
+  $('#measureBtn').disabled = false;
+  if (m.ok) {
+    settings.latencyMs = Math.round(m.frames / sr * 1000);
+    saveSettings(); pushSettings(); syncControls();
+    setCal(`Measured ${settings.latencyMs} ms. New loops are now shifted by this amount.`, 'ok');
+  } else if (m.inconsistent) {
+    setCal('The clicks arrived at uneven times. Make it quieter around you and try again.', 'bad');
+  } else {
+    setCal(`Heard ${m.heard} of 8 clicks. Turn the volume up, hold the mic near the speaker and try again.`, 'bad');
+  }
+}
+
+function syncChannelHint() {
+  $('#channelHint').textContent = demoMode ? 'The demo guitar is mono, so this setting has no effect right now.' : inChannels > 1
+    ? 'Your input is stereo. Pick the input your guitar is plugged into.'
+    : 'Your input arrives as mono, so this setting has no effect right now.';
+}
+
+function syncControls() {
+  $('#monitorBtn').setAttribute('aria-pressed', String(settings.monitor));
+  $('#videoBtn').setAttribute('aria-pressed', String(videoOn));
+  for (const id of ['#gridSizes', '#channels', '#camera']) $(id)._sync?.();
+  $('#quantize').checked = settings.quantize;
+  $('#inGain').value = settings.inGain;
+  $('#gainOut').textContent = settings.inGain > 0 ? `${(20 * Math.log10(settings.inGain)).toFixed(1)} dB` : 'off';
+  $('#latency').value = latencyMs();
+  $('#latOut').textContent = `${latencyMs()} ms`;
+  $('#latSrc').textContent = settings.latencyMs == null ? 'estimated by the browser' : 'set by you';
+  $('#vOffset').value = settings.videoOffsetMs;
+  $('#vOffOut').textContent = `${settings.videoOffsetMs > 0 ? '+' : ''}${settings.videoOffsetMs} ms`;
+  $('#outVol').value = settings.outVol;
+  $('#outVolOut').textContent = `${Math.round(settings.outVol * 100)}%`;
+}
+
+// ------------------------------------------------------------------ loop menu
+
+function openCellMenu(i) {
+  menuCell = i;
+  syncCellMenu();
+  openSheet('#cellMenu');
+}
+function syncCellMenu() {
+  const i = menuCell, c = engine.cells[i];
+  if (!c) return;
+  $('#cmTitle').textContent = `Loop ${i + 1}`;
+  $('#cmInfo').textContent = c.len
+    ? `${(c.len / sr).toFixed(2)} s · ${c.cycles} cycle${c.cycles === 1 ? '' : 's'}`
+    : c.state === 'empty' ? 'Empty' : 'Recording';
+  if (document.activeElement !== $('#cmVol')) $('#cmVol').value = c.vol;
+  $('#cmVolOut').textContent = `${Math.round(+$('#cmVol').value * 100)}%`;
+  $('#cmDub').disabled = !(c.state === 'playing' || c.state === 'muted');
+  $('#cmUndo').disabled = !c.undo;
+  $('#cmClear').disabled = c.state === 'empty';
+}
+$('#cmVol').addEventListener('input', (e) => {
+  send({ type: 'volume', cell: menuCell, value: +e.target.value });
+  $('#cmVolOut').textContent = `${Math.round(+e.target.value * 100)}%`;
+});
+$('#cmDub').addEventListener('click', () => { send({ type: 'overdub', cell: menuCell }); closeSheets(); });
+$('#cmUndo').addEventListener('click', () => { send({ type: 'undo', cell: menuCell }); });
+$('#cmClear').addEventListener('click', () => { send({ type: 'clear', cell: menuCell }); closeSheets(); });
+
+// ------------------------------------------------------------------ boot
+
+buildGrid();
+syncControls();
+
+// Exposed for testing in the browser console.
+window.looper = { get ctx() { return ctx; }, get engine() { return engine; }, clips, settings, gridShape };
+})();
+</script>
+</body>
+</html>
