@@ -279,6 +279,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
   </section>
   <section>
     <h3>Keyboard and pedals</h3>
+    <p><kbd>Space</kbd> is the record button: press to start a new loop in the next empty square, press again to stop. It also stops an overdub, or cancels a recording that is still waiting for the first note.</p>
     <p>Keys <kbd>1</kbd>–<kbd>9</kbd> and <kbd>0</kbd> tap loops 1–10, so a Bluetooth keyboard or a pedal that sends number keys works as a foot switch.</p>
   </section>
 </aside>
@@ -1343,8 +1344,30 @@ $('#clearAllBtn').addEventListener('click', () => {
   }
 });
 
+/**
+ * Spacebar = one record button: stops whatever is recording, armed or overdubbing,
+ * otherwise starts a new loop in the first empty square.
+ */
+function spaceTap() {
+  if (!ctx) return;
+  const active = engine.dub >= 0 ? engine.dub : engine.rec.cell;
+  if (active >= 0) { tap(active); return; }
+  const free = engine.cells.findIndex((c, i) => i < settings.gridSize && c.state === 'empty');
+  if (free < 0) { toast('All squares have a loop. Clear one or add squares in Settings.'); return; }
+  tap(free);
+}
+
+window.addEventListener('keyup', (e) => {
+  // Stop a focused button from also 'clicking' on space release.
+  if ((e.code === 'Space' || e.key === ' ') && !e.target.closest('input, select, textarea')) e.preventDefault();
+});
+
 window.addEventListener('keydown', (e) => {
   if (e.repeat || e.target.closest('input, select')) return;
+  if (e.code === 'Space' || e.key === ' ') {
+    if (e.target.closest('button, textarea')) e.target.blur();
+    e.preventDefault(); spaceTap(); return;
+  }
   const k = e.key === '0' ? 9 : '123456789'.indexOf(e.key);
   if (k >= 0 && k < settings.gridSize) { e.preventDefault(); tap(k); }
 });
