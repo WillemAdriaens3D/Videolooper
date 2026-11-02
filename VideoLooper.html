@@ -222,7 +222,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <button id="startBtn" class="big-btn">Start with microphone</button>
     <button id="demoBtn" class="btn" style="height:46px;border-radius:23px">Try with demo guitar sound</button>
     <div id="startMsg" role="status"></div>
-    <p class="ver">Version 2026-10-30 · 3</p>
+    <p class="ver">Version 2026-11-02 · 4</p>
   </div>
 </div>
 
@@ -284,7 +284,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
   <section>
     <h3>Keyboard and pedals</h3>
     <p><kbd>Space</kbd> is the record button: press to start a new loop in the next empty square, press again to stop. It also stops an overdub, or cancels a recording that is still waiting for the first note.</p>
-    <p class="ver" style="text-align:left">Version 2026-10-30 · 3</p>
+    <p class="ver" style="text-align:left">Version 2026-11-02 · 4</p>
     <p>Keys <kbd>1</kbd>–<kbd>9</kbd> and <kbd>0</kbd> tap loops 1–10, so a Bluetooth keyboard or a pedal that sends number keys works as a foot switch.</p>
   </section>
 </aside>
@@ -795,6 +795,12 @@ preview.muted = true; preview.playsInline = true; preview.autoplay = true;
 
 const latencyMs = () => settings.latencyMs ?? estLatencyMs;
 
+/**
+ * Bluetooth headset mics. Opening one makes Android switch the headphones to phone-call mode:
+ * playback goes quiet or mono 16 kHz, and the loop is recorded from the headphones, not the guitar.
+ */
+const isBluetooth = (label) => /bluetooth|\bbt\b|airpods|\bbuds\b|hands-?free|\bsco\b/i.test(label || '');
+
 // ------------------------------------------------------------------ helpers
 
 let toastTimer = 0;
@@ -879,7 +885,15 @@ async function start(useMic) {
     $('#start').hidden = true;
     keepAwake();
     await refreshInputs(false);
-    navigator.mediaDevices?.addEventListener('devicechange', () => refreshInputs(true));
+    navigator.mediaDevices?.addEventListener('devicechange', () => {
+      refreshInputs(true);
+      // Output moved (headphones on or off): wake the audio and pick up the new delay.
+      ctx.resume().catch(() => {});
+      setTimeout(updateEstimate, 1000); setTimeout(updateEstimate, 3000);
+    });
+    ctx.addEventListener('statechange', () => {
+      if (ctx.state !== 'running' && ctx.state !== 'closed' && document.visibilityState === 'visible') ctx.resume().catch(() => {});
+    });
     setTimeout(updateEstimate, 1500);
     if (settings.video) await enableVideo();
     syncControls();
@@ -966,6 +980,20 @@ async function openInput(id) {
     settings.inputId = ''; saveSettings();
     toast('That input is not available. Using the default input.');
   }
+  if (!id && isBluetooth(stream.getAudioTracks()[0]?.label)) {
+    // The default mic is the headphones. Use the tablet's own mic instead, so the headphones stay in music mode.
+    const devs = (await navigator.mediaDevices.enumerateDevices().catch(() => []))
+      .filter(d => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications' && !isBluetooth(d.label));
+    const pick = devs.find(d => /usb/i.test(d.label)) || devs.find(d => /speaker|built|internal|bottom|back|phone|tablet/i.test(d.label)) || devs[0];
+    if (pick) {
+      try {
+        const s2 = await navigator.mediaDevices.getUserMedia({ audio: { ...audio, deviceId: { exact: pick.deviceId } } });
+        stream.getTracks().forEach(t => t.stop());
+        stream = s2;
+        toast('Using ' + (pick.label || 'the tablet mic') + '. The Bluetooth mic would put your headphones in call mode.');
+      } catch {}
+    }
+  }
   micStream = stream;
   demoMode = false;
   src = ctx.createMediaStreamSource(stream);
@@ -1010,7 +1038,8 @@ async function refreshInputs(announce) {
   devices.forEach((d, i) => {
     if (!d.deviceId || d.deviceId === 'default' || d.deviceId === 'communications') return;
     const o = document.createElement('option');
-    o.value = d.deviceId; o.textContent = d.label || `Input ${i + 1}`;
+    o.value = d.deviceId;
+    o.textContent = (d.label || `Input ${i + 1}`) + (isBluetooth(d.label) ? ' (Bluetooth, call quality)' : '');
     sel.appendChild(o);
   });
   const ids = new Set(devices.map(d => d.deviceId));
@@ -1020,14 +1049,18 @@ async function refreshInputs(announce) {
   }
   if (announce && !demoMode) {
     // A newly plugged-in interface becomes the input automatically.
-    const added = devices.find(d => !knownInputs.has(d.deviceId) && d.deviceId !== 'default' && d.deviceId !== 'communications');
-    if (added) { await selectInput(added.deviceId); toast('Input: ' + (added.label || 'new device')); }
+    const added = devices.filter(d => !knownInputs.has(d.deviceId) && d.deviceId !== 'default' && d.deviceId !== 'communications');
+    const wired = added.find(d => !isBluetooth(d.label));
+    if (wired) { await selectInput(wired.deviceId); toast('Input: ' + (wired.label || 'new device')); }
+    else if (added.length) toast('Bluetooth headphones connected. The mic stays as it was, so they play in music mode.');
   }
   knownInputs = ids;
   sel.value = demoMode ? DEMO : settings.inputId;
 }
 $('#input').addEventListener('change', async (e) => {
   if (e.target.value === DEMO) { startDemo(); return; }
+  const label = e.target.selectedOptions[0]?.textContent || '';
+  if (isBluetooth(label)) toast('Bluetooth mic: your headphones switch to call mode, so playback gets quiet and low quality.');
   await selectInput(e.target.value);
   if (!demoMode) refreshInputs(false); // device names become visible once the mic is allowed
 });
@@ -1256,6 +1289,7 @@ new ResizeObserver(layoutGrid).observe(grid);
 
 function tap(i) {
   if (!ctx) return;
+  if (ctx.state !== 'running') ctx.resume().catch(() => {}); // a tap counts as permission to restart audio
   send({ type: 'tap', cell: i });
 }
 
@@ -1293,7 +1327,7 @@ function frame() {
   const mPhase = M.len ? mod(aF - M.start, M.len) / M.len : 0;
   $('#masterArc').style.strokeDashoffset = String(100 - mPhase * 100);
   const mt = $('#masterText');
-  const text = ctx.state !== 'running' ? 'Audio paused' : M.len ? `${(M.len / sr).toFixed(2)} s` : 'No loop yet';
+  const text = ctx.state !== 'running' ? 'Audio paused · tap' : M.len ? `${(M.len / sr).toFixed(2)} s` : 'No loop yet';
   if (mt.textContent !== text) { mt.textContent = text; mt.classList.toggle('off', ctx.state !== 'running'); }
 
   // input meter
@@ -1345,6 +1379,7 @@ $('#monitorBtn').addEventListener('click', () => {
 });
 $('#videoBtn').addEventListener('click', () => { videoOn ? disableVideo() : enableVideo(); });
 $('#settingsBtn').addEventListener('click', () => openSheet('#settings'));
+$('.master').addEventListener('click', () => { if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {}); });
 let clearArmed = 0;
 $('#clearAllBtn').addEventListener('click', () => {
   const b = $('#clearAllBtn');
