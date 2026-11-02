@@ -222,7 +222,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <button id="startBtn" class="big-btn">Start with microphone</button>
     <button id="demoBtn" class="btn" style="height:46px;border-radius:23px">Try with demo guitar sound</button>
     <div id="startMsg" role="status"></div>
-    <p class="ver">Version 2026-11-02 · 4</p>
+    <p class="ver">Version 2026-11-02 · 5</p>
   </div>
 </div>
 
@@ -284,7 +284,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
   <section>
     <h3>Keyboard and pedals</h3>
     <p><kbd>Space</kbd> is the record button: press to start a new loop in the next empty square, press again to stop. It also stops an overdub, or cancels a recording that is still waiting for the first note.</p>
-    <p class="ver" style="text-align:left">Version 2026-11-02 · 4</p>
+    <p class="ver" style="text-align:left">Version 2026-11-02 · 5</p>
     <p>Keys <kbd>1</kbd>–<kbd>9</kbd> and <kbd>0</kbd> tap loops 1–10, so a Bluetooth keyboard or a pedal that sends number keys works as a foot switch.</p>
   </section>
 </aside>
@@ -353,6 +353,7 @@ class Looper extends AudioWorkletProcessor {
     this.ks = { buf: new Float32Array(Math.ceil(sr / 50)), len: 0, p: 0, next: 0, idx: 0 };
     this.peak = 0; this.meterAt = 0;
     this.cal = null;
+    this.fb = { win: 0, hot: 0, strikes: 0 }; // feedback guard
     this.port.onmessage = (e) => this.cmd(e.data);
   }
 
@@ -529,6 +530,27 @@ class Looper extends AudioWorkletProcessor {
     this.send({ type: 'msg', text: 'Maximum loop length reached' });
   }
 
+  /**
+   * Feedback guard. Speaker -> mic -> (monitor or overdub) -> speaker grows until it screams.
+   * If the output sits at full scale for most of half a second, cut the paths that feed the
+   * input back out. (Loops alone never feed the mic back out, so nothing else needs cutting.)
+   */
+  guard(hot, n) {
+    const f = this.fb, W = Math.round(this.sr * 0.5);
+    f.win += n; f.hot += hot;
+    if (f.win < W) return;
+    const bad = f.hot > W * 0.04;
+    f.win = 0; f.hot = 0;
+    if (!bad) { f.strikes = 0; return; }
+    f.strikes++;
+    if (this.o.monitor || this.dubCell >= 0) {
+      if (this.dubCell >= 0) { this.cells[this.dubCell].st = PLAY; this.dubCell = -1; }
+      this.o.monitor = false;
+      this.send({ type: 'feedback', level: 1 });
+      this.snapshot();
+    }
+  }
+
   /** A little room before each detected note, so the pick attack is never cut. */
   preroll() { return Math.round(this.sr * 0.002); }
 
@@ -700,7 +722,11 @@ class Looper extends AudioWorkletProcessor {
     if (this.dubCell >= 0) {
       const c = this.cells[this.dubCell], d = c.data, L = d.length;
       let p = mod(g0 - o.latency - c.start, L);
-      for (let i = 0; i < n; i++) { d[p] += xin[i]; if (++p >= L) p = 0; }
+      for (let i = 0; i < n; i++) {
+        const v = d[p] + xin[i];
+        d[p] = v > 1 ? 1 : v < -1 ? -1 : v; // never let a layer run away past full scale
+        if (++p >= L) p = 0;
+      }
     }
 
     // ---- playback ----
@@ -728,7 +754,9 @@ class Looper extends AudioWorkletProcessor {
     }
 
     const o0 = out[0];
-    for (let i = 0; i < n; i++) { const y = mix[i]; o0[i] = y > 1 ? 1 : y < -1 ? -1 : y; }
+    let hot = 0;
+    for (let i = 0; i < n; i++) { const y = mix[i]; if (y > 0.97 || y < -0.97) hot++; o0[i] = y > 1 ? 1 : y < -1 ? -1 : y; }
+    if (!this.cal) this.guard(hot, n);
     for (let ch = 1; ch < out.length; ch++) out[ch].set(o0);
 
     this.pos = g0 + n;
@@ -799,6 +827,7 @@ const latencyMs = () => settings.latencyMs ?? estLatencyMs;
  * Bluetooth headset mics. Opening one makes Android switch the headphones to phone-call mode:
  * playback goes quiet or mono 16 kHz, and the loop is recorded from the headphones, not the guitar.
  */
+const BT_WARN = 'Bluetooth headphones: Chrome on Android can\'t play to them while it records from another mic. Use wired headphones or the Scarlett\'s headphone out.';
 const isBluetooth = (label) => /bluetooth|\bbt\b|airpods|\bbuds\b|hands-?free|\bsco\b/i.test(label || '');
 
 // ------------------------------------------------------------------ helpers
@@ -887,6 +916,9 @@ async function start(useMic) {
     await refreshInputs(false);
     navigator.mediaDevices?.addEventListener('devicechange', () => {
       refreshInputs(true);
+      // Output may have moved to the speaker: stop anything that feeds the mic back out.
+      if (settings.monitor) { settings.monitor = false; saveSettings(); pushSettings(); syncControls(); toast('Audio device changed: Monitor turned off to prevent feedback.'); }
+      if (engine.dub >= 0) send({ type: 'tap', cell: engine.dub });
       // Output moved (headphones on or off): wake the audio and pick up the new delay.
       ctx.resume().catch(() => {});
       setTimeout(updateEstimate, 1000); setTimeout(updateEstimate, 3000);
@@ -990,7 +1022,7 @@ async function openInput(id) {
         const s2 = await navigator.mediaDevices.getUserMedia({ audio: { ...audio, deviceId: { exact: pick.deviceId } } });
         stream.getTracks().forEach(t => t.stop());
         stream = s2;
-        toast('Using ' + (pick.label || 'the tablet mic') + '. The Bluetooth mic would put your headphones in call mode.');
+        toast('Using ' + (pick.label || 'the tablet mic') + '. ' + BT_WARN);
       } catch {}
     }
   }
@@ -1052,7 +1084,7 @@ async function refreshInputs(announce) {
     const added = devices.filter(d => !knownInputs.has(d.deviceId) && d.deviceId !== 'default' && d.deviceId !== 'communications');
     const wired = added.find(d => !isBluetooth(d.label));
     if (wired) { await selectInput(wired.deviceId); toast('Input: ' + (wired.label || 'new device')); }
-    else if (added.length) toast('Bluetooth headphones connected. The mic stays as it was, so they play in music mode.');
+    else if (added.length) toast(BT_WARN);
   }
   knownInputs = ids;
   sel.value = demoMode ? DEMO : settings.inputId;
@@ -1109,6 +1141,10 @@ function onEngine(m) {
     case 'cleared': removeClip(m.cell); break;
     case 'msg': toast(m.text); break;
     case 'calibrated': onCalibrated(m); break;
+    case 'feedback':
+      if (settings.monitor) { settings.monitor = false; saveSettings(); syncControls(); }
+      toast('Feedback! Monitor and overdub turned off. Use headphones, or turn the speaker down.');
+      break;
   }
 }
 
