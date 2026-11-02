@@ -208,7 +208,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <div class="meter" id="meter" title="Input level (the mark is the trigger level)"><i id="meterFill"></i><b id="meterTrig"></b></div>
     <button id="monitorBtn" class="ctl" aria-pressed="false" title="Hear your input through the app">Monitor</button>
     <button id="videoBtn" class="ctl" aria-pressed="false" title="Record a looping video with each loop">Video</button>
-    <button id="metroBtn" class="ctl" aria-pressed="false" title="Metronome on or off"><span id="metroTxt">♩ 100</span><span class="beats" id="beats"></span></button>
+    <button id="metroBtn" class="ctl" aria-pressed="false" title="Tap: metronome on or off. Swipe up or down: tempo"><span id="metroTxt">♩ 100</span><span class="beats" id="beats"></span></button>
     <button id="handsBtn" class="ctl" aria-pressed="false" title="Record the next loop by itself">Hands-free</button>
     <span class="spacer"></span>
     <button id="settingsBtn" class="ctl">Settings</button>
@@ -230,7 +230,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <button id="startBtn" class="big-btn">Start with microphone</button>
     <button id="demoBtn" class="btn" style="height:46px;border-radius:23px">Try with demo guitar sound</button>
     <div id="startMsg" role="status"></div>
-    <p class="ver">Version 2026-11-02 · 7</p>
+    <p class="ver">Version 2026-11-02 · 8</p>
   </div>
 </div>
 
@@ -335,7 +335,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
   <section>
     <h3>Keyboard and pedals</h3>
     <p><kbd>Space</kbd> is the record button: press to start a new loop in the next empty square, press again to stop. It also stops an overdub, or cancels a recording that is still waiting for the first note.</p>
-    <p class="ver" style="text-align:left">Version 2026-11-02 · 7</p>
+    <p class="ver" style="text-align:left">Version 2026-11-02 · 8</p>
     <p>Keys <kbd>1</kbd>–<kbd>9</kbd> and <kbd>0</kbd> tap loops 1–10, so a Bluetooth keyboard or a pedal that sends number keys works as a foot switch.</p>
   </section>
 </aside>
@@ -410,6 +410,8 @@ class Looper extends AudioWorkletProcessor {
     this.countTo = 0;    // output frame where a counted-in recording starts (0 = no count-in running)
     this.autoLen = 0;    // stop the recording by itself at this length (0 = stop on tap)
     this.chainFloor = -Infinity; // hands-free: the next loop never starts before the previous one ended
+    this.notch = null;
+    this.lock = null; // tempo frozen while the first loop is counted in and recorded
     this.ks = { buf: new Float32Array(Math.ceil(sr / 50)), len: 0, p: 0, next: 0, idx: 0 };
     this.peak = 0; this.meterAt = 0;
     this.cal = null;
@@ -436,9 +438,17 @@ class Looper extends AudioWorkletProcessor {
       case 'set': {
         const was = { metro: this.o.metro, bpm: this.o.bpm, bpb: this.o.bpb };
         Object.assign(this.o, m.values);
-        // Start the free-running click on beat 1 when it is switched on or the tempo changes.
-        if (!this.masterLen && this.countTo === 0 && (this.o.metro !== was.metro || this.o.bpm !== was.bpm || this.o.bpb !== was.bpb))
-          this.metroOrigin = this.pos;
+        if (!this.masterLen && !this.lock) {
+          if (!was.metro && this.o.metro) this.metroOrigin = this.pos; // switched on: start on beat 1
+          else if (this.o.bpm !== was.bpm || this.o.bpb !== was.bpb) {
+            // New tempo: carry on from the same place in the bar, no jump.
+            const oldBeat = 60 * this.sr / Math.max(20, was.bpm);
+            const beats = Math.max(0, (this.pos - this.metroOrigin) / oldBeat);
+            const inBar = this.o.bpb === was.bpb ? mod(beats, this.o.bpb) : 0;
+            this.metroOrigin = this.pos - inBar * 60 * this.sr / Math.max(20, this.o.bpm);
+          }
+        }
+        if (this.o.metro && !this.notch) this.notch = this.makeNotches();
         break;
       }
       case 'tap': this.tap(m.cell); break;
@@ -472,16 +482,26 @@ class Looper extends AudioWorkletProcessor {
         const o = this.o, lat = o.latency;
         if (this.masterLen === 0 && o.metro) {
           // First loop with the metronome: exactly `bars` bars long, and it stops by itself.
+          this.lock = { bpm: o.bpm, bpb: o.bpb };
           const beat = 60 * this.sr / o.bpm, bar = beat * o.bpb;
           this.autoLen = Math.round(o.bars * bar);
           this.firstBars = o.bars;
+          const running = o.metro === 2; // the click is already playing: keep its beat, never restart it
           if (o.countIn > 0) {
-            // The count-in starts right away on beat 1; recording starts on the downbeat after it.
-            this.metroOrigin = g + Math.round(this.sr * 0.05);
-            this.countTo = Math.round(this.metroOrigin + o.countIn * bar);
+            // Count-in: from the next bar of the running click, or right away on beat 1 if it was silent.
+            let first;
+            if (running) { const k = Math.ceil((g + Math.round(this.sr * 0.05) - this.metroOrigin) / bar); first = this.metroOrigin + k * bar; }
+            else { this.metroOrigin = g + Math.round(this.sr * 0.05); first = this.metroOrigin; }
+            this.countTo = Math.round(first + o.countIn * bar);
             c.st = ARMED; this.armStart = this.countTo + lat; // sound for output frame D arrives at D + latency
           } else if (o.autoStart) {
-            c.st = ARMED; this.waitSound = true; this.armStart = Infinity; // the first note sets beat 1
+            c.st = ARMED; this.waitSound = true; this.armStart = Infinity; // the first note sets beat 1 (or snaps to the bar)
+          } else if (running) {
+            // Start on the bar you are in if you tapped just after it, otherwise on the next bar.
+            const since = mod(g - lat - this.metroOrigin, bar), tol = Math.min(bar / 5, this.sr * 0.35);
+            const D = Math.round(g - lat - since + (since <= tol ? 0 : bar));
+            if (D + lat <= g) this.startAt(i, D + lat, g);
+            else { c.st = ARMED; this.armStart = D + lat; }
           } else {
             this.metroOrigin = g - lat;
             c.st = REC; this.recStart = g; this.recLen = 0;
@@ -579,7 +599,7 @@ class Looper extends AudioWorkletProcessor {
     const c = this.cells[this.recCell];
     if (this.masterLen === 0 && this.o.metro && this.autoLen) {
       // Stopped early: round to whole bars (at least one).
-      const bar = 60 * this.sr / this.o.bpm * this.o.bpb;
+      const gr = this.grid(), bar = gr.beat * gr.bpb;
       const bars = Math.max(1, Math.round(this.recLen / bar));
       const target = Math.round(bars * bar);
       this.firstBars = bars; this.autoLen = 0;
@@ -620,15 +640,36 @@ class Looper extends AudioWorkletProcessor {
     if (this.masterLen === 0) {
       this.masterLen = len; this.masterStart = start;
       this.masterBars = this.firstBars || this.o.bars; this.firstBars = 0;
+      if (this.lock) { this.o.bpm = this.lock.bpm; this.o.bpb = this.lock.bpb; }
     }
     const c = this.cells[i];
     c.data = data; c.start = start; c.cycles = Math.max(1, Math.round(len / this.masterLen));
     c.st = PLAY; c.gain = c.vol; c.undo = null;
     this.chainFloor = this.recStart + len;
-    this.recCell = -1; this.recLen = 0; this.recTarget = 0; this.autoLen = 0; this.countTo = 0;
+    this.recCell = -1; this.recLen = 0; this.recTarget = 0; this.autoLen = 0; this.countTo = 0; this.lock = null;
     this.send({ type: 'loopReady', cell: i, len, start });
     if (this.o.autoNext) this.armNext(i);
     this.snapshot();
+  }
+
+  /** Starts recording cell i at input frame s (<= g, still in the history buffer). */
+  startAt(i, s, g) {
+    const c = this.cells[i], H = this.hist.length;
+    c.st = REC; this.waitSound = false; this.recStart = s; this.recLen = g - s;
+    for (let k = 0; k < this.recLen; k++) this.recBuf[k] = this.hist[mod(s + k, H)];
+    this.send({ type: 'recStarted', cell: i, frame: s });
+  }
+
+  /**
+   * Narrow notch filters on the mic at the click's pitches (and their 2nd harmonics). If the click
+   * comes out of a speaker, the mic hears it; this keeps it out of your loops without touching
+   * the guitar audibly. Only on while the metronome is on.
+   */
+  makeNotches() {
+    return [1175, 1175, 1175, 1760, 1760, 1760, 2350, 3520].map(f => {
+      const w = 2 * Math.PI * f / this.sr, al = Math.sin(w) / (2 * 12), cs = Math.cos(w), a0 = 1 + al;
+      return { b0: 1 / a0, b1: -2 * cs / a0, b2: 1 / a0, a1: -2 * cs / a0, a2: (1 - al) / a0, x1: 0, x2: 0, y1: 0, y2: 0 };
+    });
   }
 
   /** Hands-free: arm the next empty square right after a loop is done. */
@@ -643,9 +684,9 @@ class Looper extends AudioWorkletProcessor {
 
   /** The tempo grid: where beat 1 is (output frame), and how long a beat is. */
   grid() {
-    const bpb = Math.max(1, this.o.bpb);
+    const t = this.lock || this.o, bpb = Math.max(1, t.bpb);
     if (this.masterLen) return { origin: this.masterStart, beat: this.masterLen / (Math.max(1, this.masterBars) * bpb), bpb };
-    return { origin: this.metroOrigin, beat: 60 * this.sr / Math.max(20, this.o.bpm), bpb };
+    return { origin: this.metroOrigin, beat: 60 * this.sr / Math.max(20, t.bpm), bpb };
   }
 
   autoStop() {
@@ -680,7 +721,7 @@ class Looper extends AudioWorkletProcessor {
 
   /** Metronome click, placed sample-exactly on the tempo grid. Beat 1 is higher and louder. */
   click(g0, n, mix) {
-    const gr = this.grid(), sr = this.sr, len = Math.round(sr * 0.07), vol = this.o.clickVol;
+    const gr = this.grid(), sr = this.sr, len = Math.round(sr * 0.12), vol = this.o.clickVol;
     if (vol <= 0) return;
     for (let i = 0; i < n; i++) {
       const rel = g0 + i - gr.origin;
@@ -688,10 +729,10 @@ class Looper extends AudioWorkletProcessor {
       const b = Math.floor(rel / gr.beat), j = rel - b * gr.beat;
       if (j >= len) continue;
       const one = mod(b, gr.bpb) === 0;
-      const env = Math.min(1, j / (sr * 0.0007)) * Math.exp(-j / (sr * 0.014));
-      const w = 2 * Math.PI * (one ? 1760 : 1175) * j / sr;
-      const x = vol * (one ? 0.9 : 0.6) * env * (Math.sin(w) + 0.35 * Math.sin(3 * w)); // a little edge to cut through
-      mix[i] += Math.tanh(x);
+      // Pure tone with a soft 12 ms attack: loud, but with no overtones, so the mic filter can take it out.
+      const att = sr * 0.012, env = (j < att ? 0.5 - 0.5 * Math.cos(Math.PI * j / att) : 1) * Math.exp(-j / (sr * 0.022));
+      const amp = Math.min(0.98, vol * 0.6) * (one ? 1 : 0.72);
+      mix[i] += amp * env * Math.sin(2 * Math.PI * (one ? 1760 : 1175) * j / sr);
     }
   }
 
@@ -701,7 +742,7 @@ class Looper extends AudioWorkletProcessor {
   cancel() {
     const i = this.recCell; if (i < 0) return;
     this.cells[i].st = EMPTY;
-    this.waitSound = false; this.countTo = 0; this.autoLen = 0; this.firstBars = 0;
+    this.waitSound = false; this.countTo = 0; this.autoLen = 0; this.firstBars = 0; this.lock = null;
     this.recCell = -1; this.recLen = 0; this.recTarget = 0;
     this.send({ type: 'cancelled', cell: i });
   }
@@ -827,6 +868,10 @@ class Looper extends AudioWorkletProcessor {
         else x = a[i];
       }
       x *= o.inGain;
+      if (o.metro && this.notch) for (const q of this.notch) {
+        const y = q.b0 * x + q.b1 * q.x1 + q.b2 * q.x2 - q.a1 * q.y1 - q.a2 * q.y2;
+        q.x2 = q.x1; q.x1 = x; q.y2 = q.y1; q.y1 = y < 1e-20 && y > -1e-20 ? 0 : y; x = y;
+      }
       xin[i] = x;
       const ax = x < 0 ? -x : x; if (ax > pk) pk = ax;
       this.hist[(g0 + i) % H] = x;
@@ -842,8 +887,16 @@ class Looper extends AudioWorkletProcessor {
           const ax = xin[i] < 0 ? -xin[i] : xin[i];
           if (ax >= o.trigger) {
             // First note: start a hair before it began (everything up to now is in `hist`).
-            const s = Math.max(g - this.hist.length + n + 1, this.chainFloor, this.noteStart(g, o.trigger * 0.25) - this.preroll());
-            if (this.masterLen === 0 && o.metro) this.metroOrigin = s - o.latency; // your first note is beat 1
+            let s = Math.max(g - this.hist.length + n + 1, this.chainFloor, this.noteStart(g, o.trigger * 0.25) - this.preroll());
+            if (this.masterLen === 0 && o.metro === 2) {
+              // The click was playing: the loop starts on the bar you came in on (a little early counts
+              // as that bar too). The click keeps its beat.
+              const gr = this.grid(), bar = gr.beat * gr.bpb;
+              const k = Math.floor((s + this.preroll() - o.latency - this.metroOrigin) / bar + 0.25);
+              const D = Math.round(this.metroOrigin + k * bar);
+              if (D + o.latency > g) { c.st = ARMED; this.waitSound = false; this.armStart = D + o.latency; continue; }
+              s = Math.max(D + o.latency, g - this.hist.length + n + 1);
+            } else if (this.masterLen === 0 && o.metro) this.metroOrigin = s - o.latency; // silent click: your first note is beat 1
             const Hh = this.hist.length;
             c.st = REC; this.waitSound = false; this.recStart = s; this.recLen = g - s;
             for (let k = 0; k < this.recLen; k++) this.recBuf[k] = this.hist[mod(s + k, Hh)];
@@ -1737,7 +1790,32 @@ function buildBeats(n) {
   const box = $('#beats'); box.innerHTML = '';
   beatDots = Array.from({ length: n }, (_, k) => { const d = document.createElement('i'); if (k === 0) d.className = 'one'; box.appendChild(d); return d; });
 }
-$('#metroBtn').addEventListener('click', () => {
+// Swipe up or down on the metronome button to change the tempo (1 bpm per 6 px). A plain tap toggles it.
+let tempoDrag = null, tempoDragged = false;
+const metroBtn = $('#metroBtn');
+metroBtn.style.touchAction = 'none';
+metroBtn.addEventListener('pointerdown', (e) => {
+  tempoDrag = { y: e.clientY, bpm: settings.bpm, id: e.pointerId }; tempoDragged = false;
+  try { metroBtn.setPointerCapture(e.pointerId); } catch {}
+});
+metroBtn.addEventListener('pointermove', (e) => {
+  if (!tempoDrag || e.pointerId !== tempoDrag.id) return;
+  const dy = tempoDrag.y - e.clientY;
+  if (!tempoDragged && Math.abs(dy) < 10) return;
+  tempoDragged = true;
+  if (engine.master.len) { toast('The tempo follows your loops. Clear all to set a new tempo.'); tempoDrag = null; return; }
+  const bpm = Math.max(40, Math.min(240, Math.round(tempoDrag.bpm + dy / 6)));
+  if (bpm !== settings.bpm) {
+    settings.bpm = bpm; pushSettings(); syncControls();
+    metroTxt.textContent = `♩ ${bpm}`;
+    toast(`${bpm} bpm`);
+  }
+});
+const endTempoDrag = () => { if (tempoDrag && tempoDragged) saveSettings(); tempoDrag = null; };
+metroBtn.addEventListener('pointerup', endTempoDrag);
+metroBtn.addEventListener('pointercancel', endTempoDrag);
+metroBtn.addEventListener('click', (e) => {
+  if (tempoDragged) { tempoDragged = false; e.preventDefault(); return; }
   if (settings.metro) { settings.metroLast = settings.metro; settings.metro = 0; }
   else settings.metro = settings.metroLast || 2;
   saveSettings(); pushSettings(); syncControls();
