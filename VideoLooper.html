@@ -67,6 +67,12 @@ select.ctl { appearance: none; -webkit-appearance: none; max-width: 210px; text-
 .meter i.hot { background: var(--arm); }
 .meter i.clip { background: var(--rec); }
 .spacer { flex: 1 0 4px; }
+.beats { display: inline-flex; gap: 3px; }
+.beats i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .25; }
+.beats i.on { opacity: 1; }
+.beats i.on { background: var(--play); }
+.beats i.one.on { background: var(--arm); }
+.cell.counting .badge { font-size: 44px; line-height: 1; padding: 6px 16px; color: var(--arm); }
 @media (max-width: 640px) {
   #bar { height: auto; flex-wrap: wrap; overflow: visible; padding-block: 8px; row-gap: 8px; }
   .master { min-width: 0; }
@@ -202,6 +208,8 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <div class="meter" id="meter" title="Input level (the mark is the trigger level)"><i id="meterFill"></i><b id="meterTrig"></b></div>
     <button id="monitorBtn" class="ctl" aria-pressed="false" title="Hear your input through the app">Monitor</button>
     <button id="videoBtn" class="ctl" aria-pressed="false" title="Record a looping video with each loop">Video</button>
+    <button id="metroBtn" class="ctl" aria-pressed="false" title="Metronome on or off"><span id="metroTxt">♩ 100</span><span class="beats" id="beats"></span></button>
+    <button id="handsBtn" class="ctl" aria-pressed="false" title="Record the next loop by itself">Hands-free</button>
     <span class="spacer"></span>
     <button id="settingsBtn" class="ctl">Settings</button>
     <button id="clearAllBtn" class="ctl danger">Clear all</button>
@@ -222,7 +230,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <button id="startBtn" class="big-btn">Start with microphone</button>
     <button id="demoBtn" class="btn" style="height:46px;border-radius:23px">Try with demo guitar sound</button>
     <div id="startMsg" role="status"></div>
-    <p class="ver">Version 2026-11-02 · 5</p>
+    <p class="ver">Version 2026-11-02 · 6</p>
   </div>
 </div>
 
@@ -234,24 +242,56 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <h3>Loops on screen</h3>
     <div class="seg" id="gridSizes"></div>
   </section>
+  <section>
+    <h3>Metronome</h3>
+    <div class="seg" id="metroMode"></div>
+    <label for="bpm">Tempo <output id="bpmOut"></output></label>
+    <input type="range" id="bpm" min="40" max="240" step="1">
+    <p id="bpmHint"></p>
+    <h3 style="margin-top:14px">Beats per bar</h3>
+    <div class="seg" id="bpb"></div>
+    <h3 style="margin-top:14px">Count-in before the first loop</h3>
+    <div class="seg" id="countIn"></div>
+    <label for="clickVol">Click volume <output id="clickVolOut"></output></label>
+    <input type="range" id="clickVol" min="0" max="1" step="0.01">
+  </section>
+  <section>
+    <h3>Bars per loop</h3>
+    <div class="seg" id="bars"></div>
+    <p>With the metronome on, the first loop is exactly this many bars and stops by itself. Hands-free loops are this long too. Without the metronome, the first loop counts as this many bars, so the click can follow it later.</p>
+  </section>
   <section class="row">
     <div>
-      <h3>Start recording on the beat</h3>
-      <p>New loops wait for the next cycle. Tapping just after it still catches the start.</p>
+      <h3>Hands-free: record the next loop by itself</h3>
+      <p>When a loop is done, the next empty square waits for you to play, records for the set number of bars and stops by itself. Tap the waiting square or press <kbd>Space</kbd> to stop. Use headphones: through the speaker, your loops would start the next recording.</p>
     </div>
-    <input type="checkbox" id="quantize" class="switch" aria-label="Start recording on the beat">
+    <input type="checkbox" id="autoNext" class="switch" aria-label="Hands-free: record the next loop by itself">
   </section>
   <section>
     <div class="row">
       <div>
         <h3>Start recording on the first note</h3>
-        <p>Tap, then play: the first loop starts exactly when you start playing and ends on the note you play as you tap stop. Later loops and overdubs keep their place against the first loop.</p>
+        <p>Tap, then play: the loop starts exactly when you start playing. A first loop without the metronome ends on the note you play as you tap stop. Every loop keeps its place against the first loop.</p>
       </div>
       <input type="checkbox" id="autoStart" class="switch" aria-label="Start recording on the first note">
     </div>
     <label for="trigger">Trigger level <output id="trigOut"></output></label>
     <input type="range" id="trigger" min="-60" max="-6" step="1">
     <p>Lower it if soft notes don't start the recording; raise it if noise starts it too early.</p>
+  </section>
+  <section class="row">
+    <div>
+      <h3>Start recording on the beat</h3>
+      <p>When "first note" is off: new loops wait for the next cycle (the next bar with the metronome on). Tapping just after it still catches the start.</p>
+    </div>
+    <input type="checkbox" id="quantize" class="switch" aria-label="Start recording on the beat">
+  </section>
+  <section>
+    <h3>Reverb</h3>
+    <label for="revAmt" style="margin-top:0">Amount <output id="revAmtOut"></output></label>
+    <input type="range" id="revAmt" min="0" max="1" step="0.01">
+    <div class="seg" id="revSize" style="margin-top:8px"></div>
+    <p>On everything you hear: loops, the click and Monitor. Loops are recorded dry, so you can change it afterwards.</p>
   </section>
   <section>
     <h3>Input channel</h3>
@@ -261,9 +301,24 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <input type="range" id="inGain" min="0" max="4" step="0.05">
   </section>
   <section>
-    <h3>Latency compensation</h3>
+    <h3>Output</h3>
+    <div id="outDevBox" hidden>
+      <select id="outDevice" class="ctl" style="max-width:100%;width:100%" aria-label="Output device"></select>
+    </div>
+    <h3 style="margin-top:12px">Output channels</h3>
+    <div class="seg" id="outRoute"></div>
+    <p id="outHint"></p>
+    <label for="outVol">Output volume <output id="outVolOut"></output></label>
+    <input type="range" id="outVol" min="0" max="1.5" step="0.01">
+  </section>
+  <section>
+    <h3>Latency</h3>
+    <div class="seg" id="bufMode"></div>
+    <p>Lowest gives the least delay; if you hear crackles, pick Normal. Changing this restarts the app (loops are cleared).</p>
+    <p id="latInfo"></p>
+    <h3 style="margin-top:14px">Latency compensation</h3>
     <div class="valrow"><output id="latOut"></output><span id="latSrc"></span></div>
-    <input type="range" id="latency" min="0" max="500" step="1" aria-label="Latency compensation in milliseconds">
+    <input type="range" id="latency" min="0" max="600" step="1" aria-label="Latency compensation in milliseconds">
     <div class="btnrow">
       <button class="btn" id="measureBtn">Measure</button>
       <button class="btn" id="latResetBtn">Use estimate</button>
@@ -278,13 +333,9 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <p>Nudge this if the picture runs ahead of or behind the sound.</p>
   </section>
   <section>
-    <label for="outVol" style="margin-top:0">Output volume <output id="outVolOut"></output></label>
-    <input type="range" id="outVol" min="0" max="1.5" step="0.01">
-  </section>
-  <section>
     <h3>Keyboard and pedals</h3>
     <p><kbd>Space</kbd> is the record button: press to start a new loop in the next empty square, press again to stop. It also stops an overdub, or cancels a recording that is still waiting for the first note.</p>
-    <p class="ver" style="text-align:left">Version 2026-11-02 · 5</p>
+    <p class="ver" style="text-align:left">Version 2026-11-02 · 6</p>
     <p>Keys <kbd>1</kbd>–<kbd>9</kbd> and <kbd>0</kbd> tap loops 1–10, so a Bluetooth keyboard or a pedal that sends number keys works as a foot switch.</p>
   </section>
 </aside>
@@ -349,7 +400,15 @@ class Looper extends AudioWorkletProcessor {
     this.waitSound = false; // armed, waiting for the first note to start recording
     this.pos = 0;
     this.o = { monitor: false, quantize: true, latency: Math.round(0.1 * sr), channel: 0, inChannels: 1, inGain: 1, demo: false,
-               autoStart: true, trigger: 0.03 };
+               autoStart: true, trigger: 0.03,
+               metro: 0, bpm: 100, bpb: 4, bars: 4, countIn: 1, clickVol: 0.5, // metronome: 0 off, 1 count-in only, 2 always
+               autoNext: false, cells: MAXC };
+    // Tempo grid. Without a loop it runs from metroOrigin at `bpm`; once the first loop exists the
+    // loop is the clock: it is `masterBars` bars long and the click follows it exactly.
+    this.masterBars = 0; this.metroOrigin = 0; this.firstBars = 0;
+    this.countTo = 0;    // output frame where a counted-in recording starts (0 = no count-in running)
+    this.autoLen = 0;    // stop the recording by itself at this length (0 = stop on tap)
+    this.chainFloor = -Infinity; // hands-free: the next loop never starts before the previous one ended
     this.ks = { buf: new Float32Array(Math.ceil(sr / 50)), len: 0, p: 0, next: 0, idx: 0 };
     this.peak = 0; this.meterAt = 0;
     this.cal = null;
@@ -363,7 +422,9 @@ class Looper extends AudioWorkletProcessor {
     this.send({
       type: 'state',
       master: { len: this.masterLen, start: this.masterStart },
-      rec: { cell: this.recCell, start: this.recStart, arm: this.armStart, target: this.recTarget, wait: this.waitSound },
+      rec: { cell: this.recCell, start: this.recStart, arm: this.armStart, target: this.recTarget, wait: this.waitSound,
+             countTo: this.countTo, autoLen: this.autoLen },
+      metro: this.grid(),
       dub: this.dubCell,
       cells: this.cells.map(c => ({ st: c.st, start: c.start, len: c.data ? c.data.length : 0, cycles: c.cycles, vol: c.vol, undo: !!c.undo })),
     });
@@ -371,14 +432,21 @@ class Looper extends AudioWorkletProcessor {
 
   cmd(m) {
     switch (m.type) {
-      case 'set': Object.assign(this.o, m.values); return;
+      case 'set': {
+        const was = { metro: this.o.metro, bpm: this.o.bpm, bpb: this.o.bpb };
+        Object.assign(this.o, m.values);
+        // Start the free-running click on beat 1 when it is switched on or the tempo changes.
+        if (!this.masterLen && this.countTo === 0 && (this.o.metro !== was.metro || this.o.bpm !== was.bpm || this.o.bpb !== was.bpb))
+          this.metroOrigin = this.pos;
+        break;
+      }
       case 'tap': this.tap(m.cell); break;
       case 'clear': this.clear(m.cell); break;
       case 'clearAll':
         if (this.recCell >= 0) this.cancel();
         this.dubCell = -1;
         for (let k = 0; k < MAXC; k++) this.clear(k);
-        this.masterLen = 0;
+        this.masterLen = 0; this.masterBars = 0; this.metroOrigin = this.pos;
         break;
       case 'volume': { const c = this.cells[m.cell]; if (c) c.vol = Math.max(0, Math.min(1.5, m.value)); break; }
       case 'overdub': this.startDub(m.cell); break;
@@ -398,17 +466,43 @@ class Looper extends AudioWorkletProcessor {
       case EMPTY: {
         if (this.recCell >= 0) { this.send({ type: 'msg', text: 'Finish the current recording first' }); return; }
         this.recCell = i;
+        this.countTo = 0;
         this.send({ type: 'recRequested', cell: i });
-        if ((this.masterLen === 0 || !this.o.quantize) && this.o.autoStart) {
-          // Recording starts at the first note, not at the tap. Later loops keep their real
-          // position against the first loop, so they stay in time with it.
+        const o = this.o, lat = o.latency;
+        if (this.masterLen === 0 && o.metro) {
+          // First loop with the metronome: exactly `bars` bars long, and it stops by itself.
+          const beat = 60 * this.sr / o.bpm, bar = beat * o.bpb;
+          this.autoLen = Math.round(o.bars * bar);
+          this.firstBars = o.bars;
+          if (o.countIn > 0) {
+            // The count-in starts right away on beat 1; recording starts on the downbeat after it.
+            this.metroOrigin = g + Math.round(this.sr * 0.05);
+            this.countTo = Math.round(this.metroOrigin + o.countIn * bar);
+            c.st = ARMED; this.armStart = this.countTo + lat; // sound for output frame D arrives at D + latency
+          } else if (o.autoStart) {
+            c.st = ARMED; this.waitSound = true; this.armStart = Infinity; // the first note sets beat 1
+          } else {
+            this.metroOrigin = g - lat;
+            c.st = REC; this.recStart = g; this.recLen = 0;
+            this.send({ type: 'recStarted', cell: i, frame: g });
+          }
+          break;
+        }
+        // Later loops: fixed length when hands-free or the metronome is on, otherwise stop on tap.
+        this.autoLen = this.masterLen && (o.autoNext || o.metro)
+          ? Math.max(1, Math.round(o.bars / Math.max(1, this.masterBars))) * this.masterLen : 0;
+        if (o.autoStart) {
+          // Recording starts at the first note, not at the tap. The loop keeps its real position
+          // against the first loop, so it stays in time with it wherever it starts.
           c.st = ARMED; this.waitSound = true; this.armStart = Infinity;
-        } else if (this.masterLen === 0 || !this.o.quantize) {
+        } else if (this.masterLen === 0 || !o.quantize) {
           c.st = REC; this.recStart = g; this.recLen = 0;
           this.send({ type: 'recStarted', cell: i, frame: g });
         } else {
-          const M = this.masterLen;
-          const since = mod(g - this.o.latency - this.masterStart, M); // how far past the last cycle start the player is
+          // Start on the beat: the next bar with the metronome on, otherwise the next cycle.
+          const gr = this.grid();
+          const M = o.metro ? Math.max(1, Math.round(gr.beat * o.bpb)) : this.masterLen;
+          const since = mod(g - lat - this.masterStart, M); // how far past the last boundary the player is
           const boundary = g - since;
           const tolerance = Math.min(Math.floor(M / 5), Math.floor(this.sr * 0.35));
           if (since <= tolerance) {
@@ -482,6 +576,16 @@ class Looper extends AudioWorkletProcessor {
 
   requestStop() {
     const c = this.cells[this.recCell];
+    if (this.masterLen === 0 && this.o.metro && this.autoLen) {
+      // Stopped early: round to whole bars (at least one).
+      const bar = 60 * this.sr / this.o.bpm * this.o.bpb;
+      const bars = Math.max(1, Math.round(this.recLen / bar));
+      const target = Math.round(bars * bar);
+      this.firstBars = bars; this.autoLen = 0;
+      if (this.recLen >= target) this.finalize(target); else { c.st = FIN; this.recTarget = target; }
+      return;
+    }
+    this.autoLen = 0;
     if (this.masterLen === 0) {
       let len = this.recLen;
       if (this.o.autoStart) {
@@ -512,13 +616,35 @@ class Looper extends AudioWorkletProcessor {
     const f = Math.min(96, len >> 1); // 2 ms fades at the seam, no clicks
     for (let k = 0; k < f; k++) { const w = k / f; data[k] *= w; data[len - 1 - k] *= w; }
     const start = this.recStart - this.o.latency;
-    if (this.masterLen === 0) { this.masterLen = len; this.masterStart = start; }
+    if (this.masterLen === 0) {
+      this.masterLen = len; this.masterStart = start;
+      this.masterBars = this.firstBars || this.o.bars; this.firstBars = 0;
+    }
     const c = this.cells[i];
     c.data = data; c.start = start; c.cycles = Math.max(1, Math.round(len / this.masterLen));
     c.st = PLAY; c.gain = c.vol; c.undo = null;
-    this.recCell = -1; this.recLen = 0; this.recTarget = 0;
+    this.chainFloor = this.recStart + len;
+    this.recCell = -1; this.recLen = 0; this.recTarget = 0; this.autoLen = 0; this.countTo = 0;
     this.send({ type: 'loopReady', cell: i, len, start });
+    if (this.o.autoNext) this.armNext(i);
     this.snapshot();
+  }
+
+  /** Hands-free: arm the next empty square right after a loop is done. */
+  armNext(after) {
+    const n = Math.max(1, Math.min(MAXC, this.o.cells));
+    for (let k = 1; k <= n; k++) {
+      const j = (after + k) % n;
+      if (this.cells[j].st === EMPTY) { this.tap(j); return; }
+    }
+    this.send({ type: 'msg', text: 'All squares are full. Hands-free recording stopped.' });
+  }
+
+  /** The tempo grid: where beat 1 is (output frame), and how long a beat is. */
+  grid() {
+    const bpb = Math.max(1, this.o.bpb);
+    if (this.masterLen) return { origin: this.masterStart, beat: this.masterLen / (Math.max(1, this.masterBars) * bpb), bpb };
+    return { origin: this.metroOrigin, beat: 60 * this.sr / Math.max(20, this.o.bpm), bpb };
   }
 
   autoStop() {
@@ -551,13 +677,28 @@ class Looper extends AudioWorkletProcessor {
     }
   }
 
+  /** Metronome click, placed sample-exactly on the tempo grid. Beat 1 is higher and louder. */
+  click(g0, n, mix) {
+    const gr = this.grid(), sr = this.sr, len = Math.round(sr * 0.035), vol = this.o.clickVol;
+    if (vol <= 0) return;
+    for (let i = 0; i < n; i++) {
+      const rel = g0 + i - gr.origin;
+      if (rel < 0) continue;
+      const b = Math.floor(rel / gr.beat), j = rel - b * gr.beat;
+      if (j >= len) continue;
+      const one = mod(b, gr.bpb) === 0;
+      const env = Math.min(1, j / (sr * 0.001)) * Math.exp(-j / (sr * 0.007));
+      mix[i] += vol * (one ? 0.9 : 0.55) * env * Math.sin(2 * Math.PI * (one ? 1760 : 1175) * j / sr);
+    }
+  }
+
   /** A little room before each detected note, so the pick attack is never cut. */
   preroll() { return Math.round(this.sr * 0.002); }
 
   cancel() {
     const i = this.recCell; if (i < 0) return;
     this.cells[i].st = EMPTY;
-    this.waitSound = false;
+    this.waitSound = false; this.countTo = 0; this.autoLen = 0; this.firstBars = 0;
     this.recCell = -1; this.recLen = 0; this.recTarget = 0;
     this.send({ type: 'cancelled', cell: i });
   }
@@ -698,7 +839,8 @@ class Looper extends AudioWorkletProcessor {
           const ax = xin[i] < 0 ? -xin[i] : xin[i];
           if (ax >= o.trigger) {
             // First note: start a hair before it began (everything up to now is in `hist`).
-            const s = Math.max(g - this.hist.length + n + 1, this.noteStart(g, o.trigger * 0.25) - this.preroll());
+            const s = Math.max(g - this.hist.length + n + 1, this.chainFloor, this.noteStart(g, o.trigger * 0.25) - this.preroll());
+            if (this.masterLen === 0 && o.metro) this.metroOrigin = s - o.latency; // your first note is beat 1
             const Hh = this.hist.length;
             c.st = REC; this.waitSound = false; this.recStart = s; this.recLen = g - s;
             for (let k = 0; k < this.recLen; k++) this.recBuf[k] = this.hist[mod(s + k, Hh)];
@@ -706,13 +848,14 @@ class Looper extends AudioWorkletProcessor {
             this.snapshot();
           }
         } else if (c.st === ARMED && g >= this.armStart) {
-          c.st = REC; this.recStart = g; this.recLen = 0;
+          c.st = REC; this.recStart = g; this.recLen = 0; this.countTo = 0;
           this.send({ type: 'recStarted', cell: this.recCell, frame: g });
           this.snapshot();
         }
         if (c.st === REC || c.st === FIN) {
           this.recBuf[this.recLen++] = xin[i];
-          if (c.st === FIN && this.recLen >= this.recTarget) this.finalize(this.recTarget);
+          if (c.st === REC && this.autoLen && this.recLen >= this.autoLen) this.finalize(this.autoLen);
+          else if (c.st === FIN && this.recLen >= this.recTarget) this.finalize(this.recTarget);
           else if (this.recLen >= this.recBuf.length) this.autoStop();
         }
       }
@@ -749,6 +892,7 @@ class Looper extends AudioWorkletProcessor {
         c.gain = gn;
       }
       if (o.monitor) for (let i = 0; i < n; i++) mix[i] += xin[i];
+      if (o.metro === 2 || (o.metro === 1 && this.countTo > 0)) this.click(g0, n, mix);
     } else {
       this.calibrate(g0, n, xin, mix);
     }
@@ -788,6 +932,8 @@ const DEFAULTS = {
   latencyMs: null, // null = use the estimate
   channel: 0, inGain: 1, outVol: 1, videoOffsetMs: 0, inputId: '',
   autoStart: true, triggerDb: -40,
+  metro: 0, metroLast: 2, bpm: 100, bpb: 4, bars: 4, countIn: 1, clickVol: 0.5, autoNext: false,
+  revAmt: 0, revSize: 1, outRoute: 's0', outDevice: '', buffer: 'lowest',
 };
 let settings = loadSettings();
 function loadSettings() {
@@ -803,11 +949,13 @@ if (!settings.v || settings.v < 3) { if (settings.triggerDb === -30) settings.tr
 // ------------------------------------------------------------------ state
 
 let ctx = null, node = null, src = null, micStream = null, outGain = null;
+let fxIn = null, dryGain = null, wetGain = null, conv = null, convOn = false, routeNodes = [];
 let sr = 48000, inChannels = 1, estLatencyMs = 100, demoMode = false, engineInput = null, compatBufferSec = 0;
 const DEMO = '__demo';
 let engine = {
   master: { len: 0, start: 0 },
-  rec: { cell: -1, start: 0, arm: 0, target: 0, wait: false },
+  rec: { cell: -1, start: 0, arm: 0, target: 0, wait: false, countTo: 0, autoLen: 0 },
+  metro: { origin: 0, beat: 48000 * 0.6, bpb: 4 },
   dub: -1,
   cells: Array.from({ length: MAXC }, () => ({ state: 'empty', start: 0, len: 0, cycles: 0, vol: 1, undo: false })),
 };
@@ -847,7 +995,10 @@ function pushSettings() {
     latency: Math.round(latencyMs() * sr / 1000),
     channel: settings.channel, inChannels, inGain: settings.inGain, demo: demoMode,
     autoStart: settings.autoStart, trigger: Math.pow(10, settings.triggerDb / 20),
+    metro: settings.metro, bpm: settings.bpm, bpb: settings.bpb, bars: settings.bars, countIn: settings.countIn,
+    clickVol: settings.clickVol, autoNext: settings.autoNext, cells: settings.gridSize,
   } });
+  applyReverb();
   if (outGain) outGain.gain.setTargetAtTime(settings.outVol, ctx.currentTime, 0.02);
 }
 
@@ -884,6 +1035,98 @@ function gridShape(count, w, h, aspect) {
   return best;
 }
 
+// ------------------------------------------------------------------ reverb & output
+
+const REV_SIZES = [['Room', 0.9], ['Hall', 2.2], ['Cathedral', 4.5]];
+
+/** Stereo reverb tail: decorrelated noise with an exponential decay that gets darker as it fades. */
+function buildImpulse() {
+  const secs = (REV_SIZES[settings.revSize] || REV_SIZES[1])[1];
+  const n = Math.round(secs * sr), pre = Math.round(0.012 * sr);
+  const buf = ctx.createBuffer(2, n + pre, sr);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    let lp = 0, energy = 0;
+    for (let i = 0; i < n; i++) {
+      const t = i / n;
+      const a = 0.25 + 0.7 * t;           // more smoothing later = darker tail
+      lp += (1 - a) * ((Math.random() * 2 - 1) - lp);
+      const v = lp * Math.exp(-6.9 * t);  // -60 dB at the end
+      d[pre + i] = v; energy += v * v;
+    }
+    const k = 1 / Math.sqrt(energy || 1);
+    for (let i = pre; i < d.length; i++) d[i] *= k;
+  }
+  conv.normalize = false;
+  conv.buffer = buf;
+}
+
+function applyReverb() {
+  if (!conv) return;
+  const a = settings.revAmt;
+  const t = ctx.currentTime;
+  dryGain.gain.setTargetAtTime(1 - 0.35 * a, t, 0.03);
+  wetGain.gain.setTargetAtTime(a * 0.9, t, 0.03);
+  // Only run the convolver when it is audible: it costs CPU on a tablet.
+  if (a > 0 && !convOn) { fxIn.connect(conv); convOn = true; }
+  else if (a === 0 && convOn) { try { fxIn.disconnect(conv); } catch {} convOn = false; }
+}
+
+/** Output channel choices for the current device: stereo pairs and single outputs. */
+function outRoutes() {
+  const max = Math.max(2, Math.min(8, ctx?.destination?.maxChannelCount || 2));
+  const list = [];
+  for (let c = 0; c + 1 < max; c += 2) list.push({ key: 's' + c, label: `Out ${c + 1}+${c + 2}`, kind: 'stereo', ch: c });
+  for (let c = 0; c < max; c++) list.push({ key: 'm' + c, label: `Out ${c + 1}`, kind: 'mono', ch: c });
+  return list;
+}
+
+function applyOutput() {
+  if (!ctx) return;
+  try { outGain.disconnect(); } catch {}
+  routeNodes.forEach(n => { try { n.disconnect(); } catch {} }); routeNodes = [];
+  const routes = outRoutes();
+  const r = routes.find(x => x.key === settings.outRoute) || routes[0];
+  const dest = ctx.destination, max = Math.max(2, dest.maxChannelCount || 2);
+  if (r.kind === 'stereo' && r.ch === 0) {
+    try { dest.channelCount = 2; dest.channelInterpretation = 'speakers'; } catch {}
+    outGain.connect(dest);
+  } else {
+    const need = Math.min(max, Math.max(2, r.ch + (r.kind === 'stereo' ? 2 : 1)));
+    try { dest.channelCount = need; dest.channelInterpretation = 'discrete'; } catch {}
+    const merger = ctx.createChannelMerger(need);
+    if (r.kind === 'stereo') {
+      const sp = ctx.createChannelSplitter(2);
+      outGain.connect(sp); sp.connect(merger, 0, r.ch); sp.connect(merger, 1, r.ch + 1);
+      routeNodes.push(sp);
+    } else {
+      const mono = ctx.createGain(); // folds stereo (the reverb) down to one output
+      mono.channelCount = 1; mono.channelCountMode = 'explicit'; mono.channelInterpretation = 'speakers';
+      outGain.connect(mono); mono.connect(merger, 0, r.ch);
+      routeNodes.push(mono);
+    }
+    merger.connect(dest); routeNodes.push(merger);
+  }
+  buildOutRoute();
+}
+
+async function refreshOutputs() {
+  const box = $('#outDevBox');
+  if (!ctx || typeof ctx.setSinkId !== 'function' || !navigator.mediaDevices?.enumerateDevices) { box.hidden = true; return; }
+  const outs = (await navigator.mediaDevices.enumerateDevices().catch(() => [])).filter(d => d.kind === 'audiooutput' && d.deviceId !== 'communications');
+  if (outs.length < 2) { box.hidden = true; return; }
+  const sel = $('#outDevice');
+  sel.innerHTML = '';
+  outs.forEach((d, i) => {
+    const o = document.createElement('option');
+    o.value = d.deviceId === 'default' ? '' : d.deviceId;
+    o.textContent = d.deviceId === 'default' ? 'Default output' : (d.label || `Output ${i + 1}`);
+    sel.appendChild(o);
+  });
+  sel.value = settings.outDevice;
+  box.hidden = false;
+}
+
 // ------------------------------------------------------------------ start-up
 
 $('#startBtn').addEventListener('click', () => start(true));
@@ -894,12 +1137,21 @@ async function start(useMic) {
   btns.forEach(b => b.disabled = true); msg.textContent = '';
   try {
     if (!node) {
-      ctx = ctx || new AudioContext({ latencyHint: 'interactive' });
+      const hint = { lowest: 0, normal: 'interactive', safe: 'balanced' }[settings.buffer] ?? 'interactive';
+      try { ctx = ctx || new AudioContext({ latencyHint: hint }); }
+      catch { ctx = new AudioContext({ latencyHint: 'interactive' }); }
       ctx.resume();
       sr = ctx.sampleRate;
+      // engine -> (dry + reverb) -> volume -> output channel routing -> speakers
+      fxIn = ctx.createGain();
+      dryGain = ctx.createGain(); wetGain = ctx.createGain(); conv = ctx.createConvolver();
       outGain = ctx.createGain();
       outGain.gain.value = settings.outVol;
-      outGain.connect(ctx.destination);
+      fxIn.connect(dryGain); dryGain.connect(outGain);
+      conv.connect(wetGain); wetGain.connect(outGain);
+      buildImpulse();
+      applyOutput();
+      if (settings.outDevice && ctx.setSinkId) ctx.setSinkId(settings.outDevice).then(applyOutput).catch(() => { settings.outDevice = ''; saveSettings(); });
       await createEngine();
     }
     if (useMic) {
@@ -914,8 +1166,10 @@ async function start(useMic) {
     $('#start').hidden = true;
     keepAwake();
     await refreshInputs(false);
+    refreshOutputs();
     navigator.mediaDevices?.addEventListener('devicechange', () => {
-      refreshInputs(true);
+      refreshInputs(true); refreshOutputs();
+      setTimeout(applyOutput, 500); // a new device can have more output channels
       // Output may have moved to the speaker: stop anything that feeds the mic back out.
       if (settings.monitor) { settings.monitor = false; saveSettings(); pushSettings(); syncControls(); toast('Audio device changed: Monitor turned off to prevent feedback.'); }
       if (engine.dub >= 0) send({ type: 'tap', cell: engine.dub });
@@ -956,7 +1210,7 @@ async function createEngine() {
           channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'discrete',
         });
         node.port.onmessage = (e) => onEngine(e.data);
-        node.connect(outGain);
+        node.connect(fxIn);
         engineInput = node;
         return;
       } catch (e) {
@@ -978,7 +1232,7 @@ async function createEngine() {
     window.currentFrame = Math.round(e.playbackTime * sr);
     proc.process([[ib.getChannelData(0), ib.getChannelData(1)]], [[ob.getChannelData(0), ob.getChannelData(1)]]);
   };
-  spn.connect(outGain);
+  spn.connect(fxIn);
   engineInput = spn;
   compatBufferSec = 2 * BUF / sr;
   node = { port: { postMessage: (m) => proc.port.onmessage({ data: m }) } };
@@ -997,7 +1251,7 @@ function startDemo() {
 async function openInput(id) {
   const audio = {
     echoCancellation: false, noiseSuppression: false, autoGainControl: false,
-    channelCount: { ideal: 2 }, latency: { ideal: 0 },
+    channelCount: { ideal: 2 }, latency: { ideal: 0 }, sampleRate: { ideal: sr },
   };
   if (id) audio.deviceId = { exact: id };
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
@@ -1047,6 +1301,26 @@ function updateEstimate() {
   estLatencyMs = Math.round(((ctx.baseLatency || 0) + (ctx.outputLatency || 0) + inLat + compatBufferSec) * 1000);
   if (settings.latencyMs == null) pushSettings();
   syncControls();
+}
+
+/** Where the delay comes from, so a big number can be traced to its cause. */
+function syncLatInfo() {
+  const el = $('#latInfo');
+  if (!el) return;
+  if (!ctx) { el.textContent = ''; return; }
+  const ms = (x) => `${Math.round((x || 0) * 1000)} ms`;
+  const st = micStream?.getAudioTracks()[0]?.getSettings() || {};
+  const parts = [
+    `output ${ms((ctx.baseLatency || 0) + (ctx.outputLatency || 0))}`,
+    `input ${typeof st.latency === 'number' ? ms(st.latency) : 'not reported'}`,
+    `${sr} Hz${st.sampleRate && st.sampleRate !== sr ? ` (mic ${st.sampleRate} Hz, resampled)` : ''}`,
+    compatBufferSec ? `compatibility mode +${ms(compatBufferSec)}` : 'low-latency engine',
+  ];
+  let tip = '';
+  if (compatBufferSec) tip = ' Compatibility mode adds delay: open the page from the https link in Chrome.';
+  else if (micStream && isBluetooth(micStream.getAudioTracks()[0]?.label)) tip = ' A Bluetooth mic adds a lot of delay.';
+  if (latencyMs() > 250) tip += ' Over 250 ms usually means Bluetooth headphones were connected when you measured, or another app is using audio. Disconnect them and Measure again.';
+  el.textContent = 'Browser reports: ' + parts.join(' · ') + '.' + tip;
 }
 
 async function selectInput(id) {
@@ -1110,7 +1384,7 @@ document.addEventListener('visibilitychange', () => {
 function onEngine(m) {
   switch (m.type) {
     case 'state': {
-      engine.master = m.master; engine.rec = m.rec; engine.dub = m.dub;
+      engine.master = m.master; engine.rec = m.rec; engine.dub = m.dub; engine.metro = m.metro;
       engine.cells = m.cells.map(c => ({ state: ST[c.st], start: c.start, len: c.len, cycles: c.cycles, vol: c.vol, undo: c.undo }));
       for (const cell of [...clips.keys()]) if (!engine.cells[cell].len) removeClip(cell);
       placeMedia();
@@ -1376,6 +1650,17 @@ function frame() {
   $('#meterTrig').style.left = `${Math.max(0, Math.min(1, (settings.triggerDb + 60) / 60)) * 100}%`;
   peakShown *= 0.88;
 
+  // metronome: tempo and the current beat
+  const G = engine.metro;
+  const counting = engine.rec.countTo > 0 && engine.rec.cell >= 0;
+  const bpmNow = G && G.beat ? 60 * sr / G.beat : settings.bpm;
+  const mtxt = `♩ ${Math.round(bpmNow)}`;
+  if (metroTxt.textContent !== mtxt) metroTxt.textContent = mtxt;
+  const beatOn = G && G.beat && (settings.metro === 2 || counting || M.len) && aF >= G.origin;
+  const curBeat = beatOn ? mod(Math.floor((aF - G.origin) / G.beat), G.bpb) : -1;
+  if (beatDots.length !== (G?.bpb || 4)) buildBeats(G?.bpb || 4);
+  for (let k = 0; k < beatDots.length; k++) beatDots[k].classList.toggle('on', k === curBeat);
+
   for (let i = 0; i < cellEls.length; i++) {
     const ui = cellEls[i], c = engine.cells[i];
     const st = c.state;
@@ -1385,16 +1670,30 @@ function frame() {
       badge = st === 'muted' ? 'Muted' : st === 'overdub' ? '● DUB' : c.cycles > 1 ? `×${c.cycles}` : '';
     } else if (st === 'armed' && engine.rec.cell === i) {
       if (engine.rec.wait) { phase = 0; badge = 'Play to start'; }
+      else if (counting) {
+        // Count-in: show the beats left before recording starts.
+        const left = Math.max(1, Math.ceil((engine.rec.countTo - aF) / G.beat));
+        const total = Math.max(1, Math.round(settings.countIn * G.bpb));
+        phase = 1 - Math.min(1, left / total);
+        badge = String(left);
+      }
       else { phase = M.len ? 1 - Math.max(0, engine.rec.arm - nowF) / M.len : 0; badge = 'Starts on the beat'; }
     } else if (st === 'recording' && engine.rec.cell === i) {
       const recLen = Math.max(0, nowF - engine.rec.start);
-      if (M.len) { phase = (recLen % M.len) / M.len; badge = `● REC ×${Math.floor(recLen / M.len) + 1}`; }
+      const auto = engine.rec.autoLen;
+      if (auto && G && G.beat) {
+        // Fixed length: show which bar of how many.
+        const bar = G.beat * G.bpb, bars = Math.max(1, Math.round(auto / bar));
+        phase = Math.min(1, recLen / auto);
+        badge = `● REC bar ${Math.min(bars, Math.floor(recLen / bar) + 1)}/${bars}`;
+      } else if (M.len) { phase = (recLen % M.len) / M.len; badge = `● REC ×${Math.floor(recLen / M.len) + 1}`; }
       else { phase = (recLen / sr % 4) / 4; badge = `● REC ${(recLen / sr).toFixed(1)} s`; }
     } else if (st === 'finishing' && engine.rec.cell === i) {
       phase = engine.rec.target ? Math.min(1, (nowF - engine.rec.start) / engine.rec.target) : 1;
       badge = 'Finishing…';
     }
-    const cls = `cell s-${st}${ui.mediaEl ? ' has-media' : ''}`;
+    const isCount = st === 'armed' && engine.rec.cell === i && counting;
+    const cls = `cell s-${st}${ui.mediaEl ? ' has-media' : ''}${isCount ? ' counting' : ''}`;
     if (ui.cls !== cls) {
       ui.el.className = cls; ui.cls = cls;
       const empty = st === 'empty';
@@ -1414,6 +1713,22 @@ $('#monitorBtn').addEventListener('click', () => {
   if (settings.monitor) toast('Monitoring on. Use headphones to avoid feedback.');
 });
 $('#videoBtn').addEventListener('click', () => { videoOn ? disableVideo() : enableVideo(); });
+const metroTxt = $('#metroTxt');
+let beatDots = [];
+function buildBeats(n) {
+  const box = $('#beats'); box.innerHTML = '';
+  beatDots = Array.from({ length: n }, (_, k) => { const d = document.createElement('i'); if (k === 0) d.className = 'one'; box.appendChild(d); return d; });
+}
+$('#metroBtn').addEventListener('click', () => {
+  if (settings.metro) { settings.metroLast = settings.metro; settings.metro = 0; }
+  else settings.metro = settings.metroLast || 2;
+  saveSettings(); pushSettings(); syncControls();
+  toast(settings.metro === 0 ? 'Metronome off' : settings.metro === 1 ? 'Metronome: count-in only' : 'Metronome on');
+});
+$('#handsBtn').addEventListener('click', () => {
+  settings.autoNext = !settings.autoNext; saveSettings(); pushSettings(); syncControls();
+  toast(settings.autoNext ? 'Hands-free on: after each loop, the next square records by itself.' : 'Hands-free off');
+});
 $('#settingsBtn').addEventListener('click', () => openSheet('#settings'));
 $('.master').addEventListener('click', () => { if (ctx && ctx.state !== 'running') ctx.resume().catch(() => {}); });
 let clearArmed = 0;
@@ -1498,8 +1813,44 @@ segmented('#gridSizes', GRID_SIZES.map(String), (i) => GRID_SIZES[i] === setting
   const old = settings.gridSize;
   settings.gridSize = GRID_SIZES[i]; saveSettings();
   for (let c = settings.gridSize; c < old; c++) send({ type: 'clear', cell: c });
-  buildGrid();
+  buildGrid(); pushSettings();
 });
+segmented('#metroMode', ['Off', 'Count-in only', 'Always'], (i) => i === settings.metro, (i) => {
+  settings.metro = i; if (i) settings.metroLast = i; saveSettings(); pushSettings();
+});
+const BPBS = [2, 3, 4, 5, 6, 7];
+segmented('#bpb', BPBS.map(String), (i) => BPBS[i] === settings.bpb, (i) => {
+  if (engine.master.len) { toast('Clear all loops to change beats per bar.'); return; }
+  settings.bpb = BPBS[i]; saveSettings(); pushSettings();
+});
+segmented('#countIn', ['None', '1 bar', '2 bars'], (i) => i === settings.countIn, (i) => {
+  settings.countIn = i; saveSettings(); pushSettings();
+});
+const BARS = [1, 2, 4, 8, 16];
+segmented('#bars', BARS.map(String), (i) => BARS[i] === settings.bars, (i) => {
+  settings.bars = BARS[i]; saveSettings(); pushSettings();
+});
+segmented('#revSize', REV_SIZES.map(r => r[0]), (i) => i === settings.revSize, (i) => {
+  settings.revSize = i; saveSettings(); if (conv) buildImpulse();
+});
+const BUFS = [['lowest', 'Lowest'], ['normal', 'Normal'], ['safe', 'Safe']];
+segmented('#bufMode', BUFS.map(b => b[1]), (i) => BUFS[i][0] === settings.buffer, (i) => {
+  if (BUFS[i][0] === settings.buffer) return;
+  settings.buffer = BUFS[i][0]; settings.latencyMs = null; saveSettings();
+  if (ctx) { toast('Restarting audio…'); setTimeout(() => location.reload(), 600); }
+});
+function buildOutRoute() {
+  const routes = outRoutes();
+  if (!routes.some(r => r.key === settings.outRoute)) settings.outRoute = routes[0].key;
+  segmented('#outRoute', routes.map(r => r.label), (i) => routes[i].key === settings.outRoute, (i) => {
+    settings.outRoute = routes[i].key; saveSettings(); applyOutput();
+  });
+  $('#outRoute')._sync();
+  const max = ctx?.destination?.maxChannelCount || 2;
+  $('#outHint').textContent = max > 2
+    ? `This output has ${max} channels.`
+    : 'Out 1 or Out 2 sends everything to one side, for example to an amp on one output of the Scarlett.';
+}
 segmented('#channels', ['Input 1', 'Input 2', 'Both'], (i) => i === settings.channel, (i) => {
   settings.channel = i; saveSettings(); pushSettings();
 });
@@ -1518,6 +1869,15 @@ $('#latency').addEventListener('input', (e) => { settings.latencyMs = +e.target.
 $('#latResetBtn').addEventListener('click', () => { settings.latencyMs = null; saveSettings(); updateEstimate(); setCal('', ''); });
 $('#vOffset').addEventListener('input', (e) => { settings.videoOffsetMs = +e.target.value; saveSettings(); syncControls(); });
 $('#outVol').addEventListener('input', (e) => { settings.outVol = +e.target.value; saveSettings(); pushSettings(); syncControls(); });
+$('#bpm').addEventListener('input', (e) => { settings.bpm = +e.target.value; saveSettings(); pushSettings(); syncControls(); });
+$('#clickVol').addEventListener('input', (e) => { settings.clickVol = +e.target.value; saveSettings(); pushSettings(); syncControls(); });
+$('#revAmt').addEventListener('input', (e) => { settings.revAmt = +e.target.value; saveSettings(); applyReverb(); syncControls(); });
+$('#autoNext').addEventListener('change', (e) => { settings.autoNext = e.target.checked; saveSettings(); pushSettings(); syncControls(); });
+$('#outDevice').addEventListener('change', async (e) => {
+  settings.outDevice = e.target.value; saveSettings();
+  try { await ctx.setSinkId(settings.outDevice); applyOutput(); updateEstimate(); }
+  catch (err) { toast('Could not use that output: ' + err.message); }
+});
 
 $('#measureBtn').addEventListener('click', () => {
   if (!ctx) return;
@@ -1566,6 +1926,22 @@ function syncControls() {
   $('#vOffOut').textContent = `${settings.videoOffsetMs > 0 ? '+' : ''}${settings.videoOffsetMs} ms`;
   $('#outVol').value = settings.outVol;
   $('#outVolOut').textContent = `${Math.round(settings.outVol * 100)}%`;
+  for (const id of ['#metroMode', '#bpb', '#countIn', '#bars', '#revSize', '#bufMode', '#outRoute']) $(id)._sync?.();
+  const locked = !!engine.master.len;
+  const derived = engine.metro?.beat ? Math.round(60 * sr / engine.metro.beat * 10) / 10 : settings.bpm;
+  $('#bpm').value = settings.bpm; $('#bpm').disabled = locked;
+  $('#bpmOut').textContent = locked ? `${derived} bpm` : `${settings.bpm} bpm`;
+  $('#bpmHint').textContent = locked
+    ? 'The tempo follows your first loop. Clear all loops to set a new tempo.'
+    : 'Count-in only: you hear the count-in, then just your playing. Always: the click keeps going.';
+  $('#clickVol').value = settings.clickVol;
+  $('#clickVolOut').textContent = `${Math.round(settings.clickVol * 100)}%`;
+  $('#revAmt').value = settings.revAmt;
+  $('#revAmtOut').textContent = settings.revAmt ? `${Math.round(settings.revAmt * 100)}%` : 'off';
+  $('#autoNext').checked = settings.autoNext;
+  $('#metroBtn').setAttribute('aria-pressed', String(settings.metro > 0));
+  $('#handsBtn').setAttribute('aria-pressed', String(settings.autoNext));
+  syncLatInfo();
 }
 
 // ------------------------------------------------------------------ loop menu
