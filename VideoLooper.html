@@ -230,7 +230,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <button id="startBtn" class="big-btn">Start with microphone</button>
     <button id="demoBtn" class="btn" style="height:46px;border-radius:23px">Try with demo guitar sound</button>
     <div id="startMsg" role="status"></div>
-    <p class="ver">Version 2026-11-02 · 8</p>
+    <p class="ver">Version 2026-11-02 · 9</p>
   </div>
 </div>
 
@@ -335,7 +335,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
   <section>
     <h3>Keyboard and pedals</h3>
     <p><kbd>Space</kbd> is the record button: press to start a new loop in the next empty square, press again to stop. It also stops an overdub, or cancels a recording that is still waiting for the first note.</p>
-    <p class="ver" style="text-align:left">Version 2026-11-02 · 8</p>
+    <p class="ver" style="text-align:left">Version 2026-11-02 · 9</p>
     <p>Keys <kbd>1</kbd>–<kbd>9</kbd> and <kbd>0</kbd> tap loops 1–10, so a Bluetooth keyboard or a pedal that sends number keys works as a foot switch.</p>
   </section>
 </aside>
@@ -389,7 +389,7 @@ class Looper extends AudioWorkletProcessor {
     const sr = sampleRate;
     this.sr = sr;
     this.recBuf = new Float32Array(sr * 120);
-    this.hist = new Float32Array(sr * 2);
+    this.hist = new Float32Array(sr * 12); // long enough to start a recording up to a slow bar back
     this.xin = new Float32Array(128);
     this.mix = new Float32Array(128);
     this.clk = new Float32Array(128); // click and calibration beeps: their own output, no reverb
@@ -516,7 +516,7 @@ class Looper extends AudioWorkletProcessor {
           // Recording starts at the first note, not at the tap. The loop keeps its real position
           // against the first loop, so it stays in time with it wherever it starts.
           c.st = ARMED; this.waitSound = true; this.armStart = Infinity;
-        } else if (this.masterLen === 0 || !o.quantize) {
+        } else if (this.masterLen === 0 || (!o.quantize && !o.metro)) {
           c.st = REC; this.recStart = g; this.recLen = 0;
           this.send({ type: 'recStarted', cell: i, frame: g });
         } else {
@@ -534,6 +534,7 @@ class Looper extends AudioWorkletProcessor {
             this.send({ type: 'recStarted', cell: i, frame: boundary });
           } else {
             c.st = ARMED; this.armStart = boundary + M;
+            if (o.metro) this.countTo = boundary + M - lat; // count down the beats to the bar
           }
         }
         break;
@@ -888,13 +889,14 @@ class Looper extends AudioWorkletProcessor {
           if (ax >= o.trigger) {
             // First note: start a hair before it began (everything up to now is in `hist`).
             let s = Math.max(g - this.hist.length + n + 1, this.chainFloor, this.noteStart(g, o.trigger * 0.25) - this.preroll());
-            if (this.masterLen === 0 && o.metro === 2) {
-              // The click was playing: the loop starts on the bar you came in on (a little early counts
-              // as that bar too). The click keeps its beat.
+            if (o.metro && (this.masterLen || o.metro === 2)) {
+              // Metronome on: every loop starts on beat 1 of the bar you came in on (up to a quarter
+              // bar early counts as the next bar). The click keeps its beat.
               const gr = this.grid(), bar = gr.beat * gr.bpb;
-              const k = Math.floor((s + this.preroll() - o.latency - this.metroOrigin) / bar + 0.25);
-              const D = Math.round(this.metroOrigin + k * bar);
-              if (D + o.latency > g) { c.st = ARMED; this.waitSound = false; this.armStart = D + o.latency; continue; }
+              let k = Math.floor((s + this.preroll() - o.latency - gr.origin) / bar + 0.25);
+              while (Math.round(gr.origin + k * bar) + o.latency < this.chainFloor) k++; // never overlap the previous loop
+              const D = Math.round(gr.origin + k * bar);
+              if (D + o.latency > g) { c.st = ARMED; this.waitSound = false; this.armStart = D + o.latency; this.countTo = D; continue; }
               s = Math.max(D + o.latency, g - this.hist.length + n + 1);
             } else if (this.masterLen === 0 && o.metro) this.metroOrigin = s - o.latency; // silent click: your first note is beat 1
             const Hh = this.hist.length;
@@ -1744,7 +1746,7 @@ function frame() {
       else if (counting) {
         // Count-in: show the beats left before recording starts.
         const left = Math.max(1, Math.ceil((engine.rec.countTo - aF) / G.beat));
-        const total = Math.max(1, Math.round(settings.countIn * G.bpb));
+        const total = Math.max(G.bpb, Math.round(settings.countIn * G.bpb));
         phase = 1 - Math.min(1, left / total);
         badge = String(left);
       }
