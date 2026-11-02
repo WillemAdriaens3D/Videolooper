@@ -230,7 +230,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <button id="startBtn" class="big-btn">Start with microphone</button>
     <button id="demoBtn" class="btn" style="height:46px;border-radius:23px">Try with demo guitar sound</button>
     <div id="startMsg" role="status"></div>
-    <p class="ver">Version 2026-11-02 · 6</p>
+    <p class="ver">Version 2026-11-02 · 7</p>
   </div>
 </div>
 
@@ -253,7 +253,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <h3 style="margin-top:14px">Count-in before the first loop</h3>
     <div class="seg" id="countIn"></div>
     <label for="clickVol">Click volume <output id="clickVolOut"></output></label>
-    <input type="range" id="clickVol" min="0" max="1" step="0.01">
+    <input type="range" id="clickVol" min="0" max="3" step="0.05">
   </section>
   <section>
     <h3>Bars per loop</h3>
@@ -335,7 +335,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
   <section>
     <h3>Keyboard and pedals</h3>
     <p><kbd>Space</kbd> is the record button: press to start a new loop in the next empty square, press again to stop. It also stops an overdub, or cancels a recording that is still waiting for the first note.</p>
-    <p class="ver" style="text-align:left">Version 2026-11-02 · 6</p>
+    <p class="ver" style="text-align:left">Version 2026-11-02 · 7</p>
     <p>Keys <kbd>1</kbd>–<kbd>9</kbd> and <kbd>0</kbd> tap loops 1–10, so a Bluetooth keyboard or a pedal that sends number keys works as a foot switch.</p>
   </section>
 </aside>
@@ -392,6 +392,7 @@ class Looper extends AudioWorkletProcessor {
     this.hist = new Float32Array(sr * 2);
     this.xin = new Float32Array(128);
     this.mix = new Float32Array(128);
+    this.clk = new Float32Array(128); // click and calibration beeps: their own output, no reverb
     this.cells = [];
     for (let i = 0; i < MAXC; i++) this.cells.push({ st: EMPTY, data: null, start: 0, cycles: 0, vol: 1, gain: 0, undo: null });
     this.masterLen = 0; this.masterStart = 0;
@@ -679,7 +680,7 @@ class Looper extends AudioWorkletProcessor {
 
   /** Metronome click, placed sample-exactly on the tempo grid. Beat 1 is higher and louder. */
   click(g0, n, mix) {
-    const gr = this.grid(), sr = this.sr, len = Math.round(sr * 0.035), vol = this.o.clickVol;
+    const gr = this.grid(), sr = this.sr, len = Math.round(sr * 0.07), vol = this.o.clickVol;
     if (vol <= 0) return;
     for (let i = 0; i < n; i++) {
       const rel = g0 + i - gr.origin;
@@ -687,8 +688,10 @@ class Looper extends AudioWorkletProcessor {
       const b = Math.floor(rel / gr.beat), j = rel - b * gr.beat;
       if (j >= len) continue;
       const one = mod(b, gr.bpb) === 0;
-      const env = Math.min(1, j / (sr * 0.001)) * Math.exp(-j / (sr * 0.007));
-      mix[i] += vol * (one ? 0.9 : 0.55) * env * Math.sin(2 * Math.PI * (one ? 1760 : 1175) * j / sr);
+      const env = Math.min(1, j / (sr * 0.0007)) * Math.exp(-j / (sr * 0.014));
+      const w = 2 * Math.PI * (one ? 1760 : 1175) * j / sr;
+      const x = vol * (one ? 0.9 : 0.6) * env * (Math.sin(w) + 0.35 * Math.sin(3 * w)); // a little edge to cut through
+      mix[i] += Math.tanh(x);
     }
   }
 
@@ -807,7 +810,7 @@ class Looper extends AudioWorkletProcessor {
   process(inputs, outputs) {
     const out = outputs[0];
     const n = out[0].length;
-    if (this.xin.length < n) { this.xin = new Float32Array(n); this.mix = new Float32Array(n); }
+    if (this.xin.length < n) { this.xin = new Float32Array(n); this.mix = new Float32Array(n); this.clk = new Float32Array(n); }
     const g0 = currentFrame;
     const xin = this.xin, mix = this.mix, o = this.o;
     const inp = inputs[0] || [];
@@ -874,6 +877,7 @@ class Looper extends AudioWorkletProcessor {
 
     // ---- playback ----
     mix.fill(0, 0, n);
+    const clk = this.clk; clk.fill(0, 0, n);
     if (!this.cal) {
       for (let k = 0; k < MAXC; k++) {
         const c = this.cells[k], d = c.data;
@@ -892,16 +896,17 @@ class Looper extends AudioWorkletProcessor {
         c.gain = gn;
       }
       if (o.monitor) for (let i = 0; i < n; i++) mix[i] += xin[i];
-      if (o.metro === 2 || (o.metro === 1 && this.countTo > 0)) this.click(g0, n, mix);
+      if (o.metro === 2 || (o.metro === 1 && this.countTo > 0)) this.click(g0, n, clk);
     } else {
-      this.calibrate(g0, n, xin, mix);
+      this.calibrate(g0, n, xin, clk);
     }
 
     const o0 = out[0];
     let hot = 0;
     for (let i = 0; i < n; i++) { const y = mix[i]; if (y > 0.97 || y < -0.97) hot++; o0[i] = y > 1 ? 1 : y < -1 ? -1 : y; }
     if (!this.cal) this.guard(hot, n);
-    for (let ch = 1; ch < out.length; ch++) out[ch].set(o0);
+    // Output channel 1 carries only the click. The page sends it past the reverb.
+    if (out[1]) { const o1 = out[1]; for (let i = 0; i < n; i++) { const y = clk[i]; o1[i] = y > 1 ? 1 : y < -1 ? -1 : y; } }
 
     this.pos = g0 + n;
     if (this.pos - this.meterAt >= 2048) {
@@ -932,7 +937,7 @@ const DEFAULTS = {
   latencyMs: null, // null = use the estimate
   channel: 0, inGain: 1, outVol: 1, videoOffsetMs: 0, inputId: '',
   autoStart: true, triggerDb: -40,
-  metro: 0, metroLast: 2, bpm: 100, bpb: 4, bars: 4, countIn: 1, clickVol: 0.5, autoNext: false,
+  metro: 0, metroLast: 2, bpm: 100, bpb: 4, bars: 4, countIn: 1, clickVol: 1.5, autoNext: false,
   revAmt: 0, revSize: 1, outRoute: 's0', outDevice: '', buffer: 'lowest',
 };
 let settings = loadSettings();
@@ -944,12 +949,18 @@ function saveSettings() {
   try { localStorage.setItem('videolooper.settings', JSON.stringify(settings)); } catch {}
 }
 if (!GRID_SIZES.includes(settings.gridSize)) settings.gridSize = DEFAULTS.gridSize;
-if (!settings.v || settings.v < 3) { if (settings.triggerDb === -30) settings.triggerDb = -40; settings.v = 3; saveSettings(); }
+if (!settings.v || settings.v < 7) {
+  if (settings.triggerDb === -30) settings.triggerDb = -40;
+  // The click got its own 0-300% scale: keep the old setting's place, 3x as loud.
+  let stored = {}; try { stored = JSON.parse(localStorage.getItem('videolooper.settings') || '{}'); } catch {}
+  if (typeof stored.clickVol === 'number') settings.clickVol = Math.min(3, stored.clickVol * 3);
+  settings.v = 7; saveSettings();
+}
 
 // ------------------------------------------------------------------ state
 
 let ctx = null, node = null, src = null, micStream = null, outGain = null;
-let fxIn = null, dryGain = null, wetGain = null, conv = null, convOn = false, routeNodes = [];
+let engineSplit = null, clickGain = null, fxIn = null, dryGain = null, wetGain = null, conv = null, convOn = false, routeNodes = [];
 let sr = 48000, inChannels = 1, estLatencyMs = 100, demoMode = false, engineInput = null, compatBufferSec = 0;
 const DEMO = '__demo';
 let engine = {
@@ -1144,10 +1155,17 @@ async function start(useMic) {
       sr = ctx.sampleRate;
       // engine -> (dry + reverb) -> volume -> output channel routing -> speakers
       fxIn = ctx.createGain();
+      // Engine output: channel 0 = loops + monitor (through the reverb), channel 1 = click (dry).
+      engineSplit = ctx.createChannelSplitter(2);
+      const music = ctx.createGain(); music.channelCount = 1; music.channelCountMode = 'explicit';
+      clickGain = ctx.createGain();
+      engineSplit.connect(music, 0); music.connect(fxIn);
+      engineSplit.connect(clickGain, 1);
       dryGain = ctx.createGain(); wetGain = ctx.createGain(); conv = ctx.createConvolver();
       outGain = ctx.createGain();
       outGain.gain.value = settings.outVol;
       fxIn.connect(dryGain); dryGain.connect(outGain);
+      clickGain.connect(outGain);
       conv.connect(wetGain); wetGain.connect(outGain);
       buildImpulse();
       applyOutput();
@@ -1210,7 +1228,7 @@ async function createEngine() {
           channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'discrete',
         });
         node.port.onmessage = (e) => onEngine(e.data);
-        node.connect(fxIn);
+        node.connect(engineSplit);
         engineInput = node;
         return;
       } catch (e) {
@@ -1232,7 +1250,7 @@ async function createEngine() {
     window.currentFrame = Math.round(e.playbackTime * sr);
     proc.process([[ib.getChannelData(0), ib.getChannelData(1)]], [[ob.getChannelData(0), ob.getChannelData(1)]]);
   };
-  spn.connect(fxIn);
+  spn.connect(engineSplit);
   engineInput = spn;
   compatBufferSec = 2 * BUF / sr;
   node = { port: { postMessage: (m) => proc.port.onmessage({ data: m }) } };
