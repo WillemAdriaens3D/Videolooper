@@ -130,6 +130,18 @@ video.mirror { transform: scaleX(-1); }
 }
 .cell.has-media .more { background: rgba(0,0,0,.35); color: #fff; }
 .cell.s-empty .more { display: none; }
+.fader { position: absolute; left: 4px; top: 32px; bottom: 10px; width: 36px; touch-action: none; cursor: ns-resize; display: none; }
+.cell.s-playing .fader, .cell.s-muted .fader, .cell.s-overdub .fader { display: block; }
+.ftrack { position: absolute; left: 15px; width: 6px; top: 11px; bottom: 11px; border-radius: 3px; background: rgba(0,0,0,.45); box-shadow: inset 0 0 0 1px var(--track); }
+.ffill { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 3px; background: var(--c); opacity: .7; }
+.funity { position: absolute; left: -5px; right: -5px; bottom: 66.67%; height: 2px; background: var(--dim); opacity: .7; }
+.fknob { position: absolute; left: 6px; width: 24px; height: 22px; border-radius: 6px; background: var(--fg); box-shadow: 0 1px 4px rgba(0,0,0,.6);
+  margin-bottom: 0; }
+.fknob::after { content: ""; position: absolute; left: 5px; right: 5px; top: 10px; height: 2px; background: var(--bg); opacity: .5; }
+.fval { position: absolute; left: 38px; top: 0; font: 600 12px var(--font); font-variant-numeric: tabular-nums; color: var(--fg);
+  background: rgba(0,0,0,.6); border-radius: 6px; padding: 2px 6px; opacity: 0; transition: opacity .15s; pointer-events: none; white-space: nowrap; }
+.fader.active .fval { opacity: 1; }
+.cell .num { left: 14px; }
 @media (prefers-reduced-motion: reduce) {
   .cell.s-armed .ring, .cell.s-armed .label { animation: none; }
   .cell { transition: none; }
@@ -210,6 +222,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <button id="videoBtn" class="ctl" aria-pressed="false" title="Record a looping video with each loop">Video</button>
     <button id="metroBtn" class="ctl" aria-pressed="false" title="Tap: metronome on or off. Swipe up or down: tempo"><span id="metroTxt">♩ 100</span><span class="beats" id="beats"></span></button>
     <button id="handsBtn" class="ctl" aria-pressed="false" title="Record the next loop by itself">Hands-free</button>
+    <button id="partBtn" class="ctl" title="At the end of the cycle: all loops quiet, new loop records (right arrow key)">Next part ▸</button>
     <span class="spacer"></span>
     <button id="settingsBtn" class="ctl">Settings</button>
     <button id="clearAllBtn" class="ctl danger">Clear all</button>
@@ -230,7 +243,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <button id="startBtn" class="big-btn">Start with microphone</button>
     <button id="demoBtn" class="btn" style="height:46px;border-radius:23px">Try with demo guitar sound</button>
     <div id="startMsg" role="status"></div>
-    <p class="ver">Version 2026-11-03 · 10</p>
+    <p class="ver">Version 2026-11-03 · 11</p>
   </div>
 </div>
 
@@ -335,7 +348,8 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
   <section>
     <h3>Keyboard and pedals</h3>
     <p><kbd>Space</kbd> is the record button: press to start a new loop in the next empty square, press again to stop. It also stops an overdub, or cancels a recording that is still waiting for the first note.</p>
-    <p class="ver" style="text-align:left">Version 2026-11-03 · 10</p>
+    <p class="ver" style="text-align:left">Version 2026-11-03 · 11</p>
+    <p><kbd>→</kbd> (right arrow) is Next part: at the end of the current cycle all loops go quiet and a new loop starts recording on that downbeat. Press it again before then to cancel.</p>
     <p>Keys <kbd>1</kbd>–<kbd>9</kbd> and <kbd>0</kbd> tap loops 1–10, so a Bluetooth keyboard or a pedal that sends number keys works as a foot switch.</p>
   </section>
 </aside>
@@ -412,6 +426,7 @@ class Looper extends AudioWorkletProcessor {
     this.chainFloor = -Infinity; // hands-free: the next loop never starts before the previous one ended
     this.notch = null;
     this.lock = null; // tempo frozen while the first loop is counted in and recorded
+    this.partAt = 0;  // next part: output frame where all loops go quiet
     this.ks = { buf: new Float32Array(Math.ceil(sr / 50)), len: 0, p: 0, next: 0, idx: 0 };
     this.peak = 0; this.meterAt = 0;
     this.cal = null;
@@ -461,6 +476,7 @@ class Looper extends AudioWorkletProcessor {
         break;
       case 'volume': { const c = this.cells[m.cell]; if (c) c.vol = Math.max(0, Math.min(1.5, m.value)); break; }
       case 'overdub': this.startDub(m.cell); break;
+      case 'nextPart': this.nextPart(); break;
       case 'undo': this.undo(m.cell); break;
       case 'cancelRec': if (this.recCell >= 0) this.cancel(); break;
       case 'calibrate': if (!this.cal) this.startCal(); return;
@@ -510,8 +526,7 @@ class Looper extends AudioWorkletProcessor {
           break;
         }
         // Later loops: fixed length when hands-free or the metronome is on, otherwise stop on tap.
-        this.autoLen = this.masterLen && (o.autoNext || o.metro)
-          ? Math.max(1, Math.round(o.bars / Math.max(1, this.masterBars))) * this.masterLen : 0;
+        this.autoLen = this.masterLen && (o.autoNext || o.metro) ? this.cyclesPerLoop() * this.masterLen : 0;
         if (o.autoStart) {
           // Recording starts at the first note, not at the tap. The loop keeps its real position
           // against the first loop, so it stays in time with it wherever it starts.
@@ -640,7 +655,8 @@ class Looper extends AudioWorkletProcessor {
     const start = this.recStart - this.o.latency;
     if (this.masterLen === 0) {
       this.masterLen = len; this.masterStart = start;
-      this.masterBars = this.firstBars || this.o.bars; this.firstBars = 0;
+      this.masterFree = !this.firstBars; // recorded without the metronome
+      this.masterBars = this.firstBars || this.guessBars(len); this.firstBars = 0;
       if (this.lock) { this.o.bpm = this.lock.bpm; this.o.bpb = this.lock.bpb; }
     }
     const c = this.cells[i];
@@ -671,6 +687,50 @@ class Looper extends AudioWorkletProcessor {
       const w = 2 * Math.PI * f / this.sr, al = Math.sin(w) / (2 * 12), cs = Math.cos(w), a0 = 1 + al;
       return { b0: 1 / a0, b1: -2 * cs / a0, b2: 1 / a0, a1: -2 * cs / a0, a2: (1 - al) / a0, x1: 0, x2: 0, y1: 0, y2: 0 };
     });
+  }
+
+  /**
+   * Next part: at the end of the current cycle, every playing loop goes quiet, and on that same
+   * downbeat a new loop starts recording in the next empty square. Muted loops stay, tap to bring back.
+   */
+  nextPart() {
+    if (this.partAt) { this.partAt = 0; this.cancel(); this.send({ type: 'msg', text: 'Next part cancelled' }); return; }
+    if (this.dubCell >= 0) { this.cells[this.dubCell].st = PLAY; this.dubCell = -1; }
+    const n = Math.max(1, Math.min(MAXC, this.o.cells));
+    let j = -1;
+    for (let k = 0; k < n; k++) if (this.cells[k].st === EMPTY) { j = k; break; }
+    if (j < 0) { this.send({ type: 'msg', text: 'All squares are full. Clear one for the next part.' }); return; }
+    if (!this.masterLen) { if (this.recCell < 0) this.tap(j); return; }
+    if (this.recCell >= 0) { this.send({ type: 'msg', text: 'Finish the current recording first' }); return; }
+    // The next cycle start that is still ahead of what you hear now.
+    const M = this.masterLen, lat = this.o.latency, g = this.pos;
+    const D = this.masterStart + Math.ceil((g + Math.round(this.sr * 0.03) - this.masterStart) / M) * M;
+    this.partAt = D;
+    this.recCell = j;
+    const c = this.cells[j];
+    c.st = ARMED; this.waitSound = false; this.armStart = D + lat; this.countTo = D;
+    this.autoLen = this.cyclesPerLoop() * M;
+    this.send({ type: 'recRequested', cell: j });
+  }
+
+  /**
+   * A loop recorded without the metronome: how many bars is it? Pick 1, 2, 4, 8 or 16 bars,
+   * whichever gives the tempo closest to the tempo setting (a 2 s loop at 120 bpm is 1 bar of 4/4).
+   */
+  /** Fixed-length loops: "bars per loop" with the metronome; as long as a free first loop without it. */
+  cyclesPerLoop() {
+    if (this.masterFree && !this.o.metro) return 1;
+    return Math.max(1, Math.round(this.o.bars / Math.max(1, this.masterBars)));
+  }
+
+  guessBars(len) {
+    let best = 1, bestErr = Infinity;
+    for (const b of [1, 2, 4, 8, 16]) {
+      const bpm = 60 * this.sr * b * this.o.bpb / len;
+      const err = Math.abs(Math.log(bpm / this.o.bpm));
+      if (err < bestErr) { bestErr = err; best = b; }
+    }
+    return best;
   }
 
   /** Hands-free: arm the next empty square right after a loop is done. */
@@ -743,7 +803,7 @@ class Looper extends AudioWorkletProcessor {
   cancel() {
     const i = this.recCell; if (i < 0) return;
     this.cells[i].st = EMPTY;
-    this.waitSound = false; this.countTo = 0; this.autoLen = 0; this.firstBars = 0; this.lock = null;
+    this.waitSound = false; this.countTo = 0; this.autoLen = 0; this.firstBars = 0; this.lock = null; this.partAt = 0;
     this.recCell = -1; this.recLen = 0; this.recTarget = 0;
     this.send({ type: 'cancelled', cell: i });
   }
@@ -933,6 +993,11 @@ class Looper extends AudioWorkletProcessor {
     // ---- playback ----
     mix.fill(0, 0, n);
     const clk = this.clk; clk.fill(0, 0, n);
+    if (this.partAt && g0 + n > this.partAt) {
+      for (const c of this.cells) if (c.st === PLAY) c.st = MUTE; // ~7 ms fade from the downbeat
+      this.partAt = 0;
+      this.snapshot();
+    }
     if (!this.cal) {
       for (let k = 0; k < MAXC; k++) {
         const c = this.cells[k], d = c.data;
@@ -1679,7 +1744,10 @@ function buildGrid() {
       </svg>
       <span class="num">${i + 1}</span>
       <div class="label"><span class="big">+</span><span class="txt">Tap to record</span><span class="badge"></span></div>
-      <button class="more" aria-label="Loop ${i + 1} options">⋯</button>`;
+      <button class="more" aria-label="Loop ${i + 1} options">⋯</button>
+      <div class="fader" role="slider" aria-label="Loop ${i + 1} volume" aria-valuemin="0" aria-valuemax="150" tabindex="-1">
+        <div class="ftrack"><div class="ffill"></div><div class="funity"></div></div><div class="fknob"></div><span class="fval"></span>
+      </div>`;
     // Act on touch-down, not release: timing is everything in a looper.
     el.addEventListener('pointerdown', (e) => {
       if (e.target.closest('.more')) return;
@@ -1694,12 +1762,57 @@ function buildGrid() {
       el, media: el.querySelector('.media'), arc: el.querySelector('.arc'),
       big: el.querySelector('.big'), txt: el.querySelector('.txt'), badge: el.querySelector('.badge'),
       cls: '', badgeText: '', mediaEl: null,
+      fader: el.querySelector('.fader'), fknob: el.querySelector('.fknob'), ffill: el.querySelector('.ffill'),
+      fval: el.querySelector('.fval'), fshown: -1, fdrag: null,
     };
+    setupFader(ui, i);
     cellEls.push(ui);
     grid.appendChild(el);
   }
   layoutGrid();
   placeMedia();
+}
+
+/** Vertical volume fader on a loop square: drag up/down (0–150%, notch at 100%), double-tap = 100%. */
+const FMAX = 1.5;
+function setupFader(ui, i) {
+  const f = ui.fader;
+  const valueAt = (y) => {
+    const r = f.querySelector('.ftrack').getBoundingClientRect();
+    let v = (1 - (y - r.top) / r.height) * FMAX;
+    v = Math.max(0, Math.min(FMAX, v));
+    if (Math.abs(v - 1) < 0.04) v = 1; // snap to 100%
+    return Math.round(v * 100) / 100;
+  };
+  let lastTap = 0;
+  f.addEventListener('pointerdown', (e) => {
+    e.stopPropagation(); e.preventDefault(); // never counts as a tap on the loop
+    const now = performance.now();
+    if (now - lastTap < 300) { setVol(ui, i, 1); lastTap = 0; return; }
+    lastTap = now;
+    ui.fdrag = { id: e.pointerId };
+    try { f.setPointerCapture(e.pointerId); } catch {}
+    setVol(ui, i, valueAt(e.clientY));
+    f.classList.add('active');
+  });
+  f.addEventListener('pointermove', (e) => { if (ui.fdrag && e.pointerId === ui.fdrag.id) setVol(ui, i, valueAt(e.clientY)); });
+  const end = () => { ui.fdrag = null; f.classList.remove('active'); };
+  f.addEventListener('pointerup', end); f.addEventListener('pointercancel', end);
+}
+function setVol(ui, i, v) {
+  engine.cells[i].vol = v;
+  send({ type: 'volume', cell: i, value: v });
+  drawFader(ui, v);
+  if (menuCell === i) syncCellMenu();
+}
+function drawFader(ui, v) {
+  if (ui.fshown === v) return;
+  ui.fshown = v;
+  const t = v / FMAX;
+  ui.fknob.style.bottom = `calc(${t * 100}% - ${t * 22}px)`;
+  ui.ffill.style.height = `${t * 100}%`;
+  ui.fval.textContent = `${Math.round(v * 100)}%`;
+  ui.fader.setAttribute('aria-valuenow', String(Math.round(v * 100)));
 }
 
 function layoutGrid() {
@@ -1813,6 +1926,7 @@ function frame() {
       ui.big.hidden = !empty; ui.txt.hidden = !empty;
     }
     if (ui.badgeText !== badge) { ui.badge.textContent = badge; ui.badgeText = badge; }
+    if (!ui.fdrag && c.len) drawFader(ui, c.vol);
     ui.arc.style.strokeDashoffset = String(100 - phase * 100);
   }
 
@@ -1864,6 +1978,13 @@ metroBtn.addEventListener('click', (e) => {
   saveSettings(); pushSettings(); syncControls();
   toast(settings.metro === 0 ? 'Metronome off' : settings.metro === 1 ? 'Metronome: count-in only' : 'Metronome on');
 });
+function nextPart() {
+  if (!ctx) return;
+  if (ctx.state !== 'running') ctx.resume().catch(() => {});
+  send({ type: 'nextPart' });
+  if (engine.master.len && engine.rec.cell < 0) toast('Next part: loops stop at the end of the cycle, a new loop records from there. Press again to cancel.');
+}
+$('#partBtn').addEventListener('click', nextPart);
 $('#handsBtn').addEventListener('click', () => {
   settings.autoNext = !settings.autoNext; saveSettings(); pushSettings(); syncControls();
   toast(settings.autoNext ? 'Hands-free on: after each loop, the next square records by itself.' : 'Hands-free off');
@@ -1916,6 +2037,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.repeat) return;
+  if (e.key === 'ArrowRight') { e.preventDefault(); nextPart(); return; }
   const k = e.key === '0' ? 9 : '123456789'.indexOf(e.key);
   if (k >= 0 && k < settings.gridSize) { e.preventDefault(); tap(k); }
 }, true);
