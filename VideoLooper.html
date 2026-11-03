@@ -230,7 +230,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
     <button id="startBtn" class="big-btn">Start with microphone</button>
     <button id="demoBtn" class="btn" style="height:46px;border-radius:23px">Try with demo guitar sound</button>
     <div id="startMsg" role="status"></div>
-    <p class="ver">Version 2026-11-02 · 9</p>
+    <p class="ver">Version 2026-11-03 · 10</p>
   </div>
 </div>
 
@@ -314,7 +314,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
   <section>
     <h3>Latency</h3>
     <div class="seg" id="bufMode"></div>
-    <p>Lowest gives the least delay; if you hear crackles, pick Normal. Changing this restarts the app (loops are cleared).</p>
+    <p>Normal is the safe choice. Lowest gives less delay but can drop out, which makes the beat stumble; Safe helps on a busy tablet. Recordings stay in time with any of them. Changing this restarts the app (loops are cleared).</p>
     <p id="latInfo"></p>
     <h3 style="margin-top:14px">Latency compensation</h3>
     <div class="valrow"><output id="latOut"></output><span id="latSrc"></span></div>
@@ -335,7 +335,7 @@ kbd { font: 12px var(--mono); border: 1px solid var(--line); border-radius: 4px;
   <section>
     <h3>Keyboard and pedals</h3>
     <p><kbd>Space</kbd> is the record button: press to start a new loop in the next empty square, press again to stop. It also stops an overdub, or cancels a recording that is still waiting for the first note.</p>
-    <p class="ver" style="text-align:left">Version 2026-11-02 · 9</p>
+    <p class="ver" style="text-align:left">Version 2026-11-03 · 10</p>
     <p>Keys <kbd>1</kbd>–<kbd>9</kbd> and <kbd>0</kbd> tap loops 1–10, so a Bluetooth keyboard or a pedal that sends number keys works as a foot switch.</p>
   </section>
 </aside>
@@ -730,9 +730,9 @@ class Looper extends AudioWorkletProcessor {
       const b = Math.floor(rel / gr.beat), j = rel - b * gr.beat;
       if (j >= len) continue;
       const one = mod(b, gr.bpb) === 0;
-      // Pure tone with a soft 12 ms attack: loud, but with no overtones, so the mic filter can take it out.
-      const att = sr * 0.012, env = (j < att ? 0.5 - 0.5 * Math.cos(Math.PI * j / att) : 1) * Math.exp(-j / (sr * 0.022));
-      const amp = Math.min(0.98, vol * 0.6) * (one ? 1 : 0.72);
+      // Pure tone with a crisp 2 ms attack (a soft attack blurs where the beat is): loud, but with no overtones, so the mic filter can take it out.
+      const att = sr * 0.002, env = (j < att ? 0.5 - 0.5 * Math.cos(Math.PI * j / att) : 1) * Math.exp(-j / (sr * 0.022));
+      const amp = Math.min(0.98, vol * 0.6) * (one ? 1 : 0.85); // near-equal loudness: beat 1 stands out by pitch
       mix[i] += amp * env * Math.sin(2 * Math.PI * (one ? 1760 : 1175) * j / sr);
     }
   }
@@ -993,7 +993,7 @@ const DEFAULTS = {
   channel: 0, inGain: 1, outVol: 1, videoOffsetMs: 0, inputId: '',
   autoStart: true, triggerDb: -40,
   metro: 0, metroLast: 2, bpm: 100, bpb: 4, bars: 4, countIn: 1, clickVol: 1.5, autoNext: false,
-  revAmt: 0, revSize: 1, outRoute: 's0', outDevice: '', buffer: 'lowest',
+  revAmt: 0, revSize: 1, outRoute: 's0', outDevice: '', buffer: 'normal',
 };
 let settings = loadSettings();
 function loadSettings() {
@@ -1004,12 +1004,17 @@ function saveSettings() {
   try { localStorage.setItem('videolooper.settings', JSON.stringify(settings)); } catch {}
 }
 if (!GRID_SIZES.includes(settings.gridSize)) settings.gridSize = DEFAULTS.gridSize;
+if (settings.v && settings.v < 10) {
+  // Lowest buffer caused dropouts on Android, which make the beat stumble: back to Normal.
+  if (settings.buffer === 'lowest') settings.buffer = 'normal';
+  settings.v = 10; saveSettings();
+}
 if (!settings.v || settings.v < 7) {
   if (settings.triggerDb === -30) settings.triggerDb = -40;
   // The click got its own 0-300% scale: keep the old setting's place, 3x as loud.
   let stored = {}; try { stored = JSON.parse(localStorage.getItem('videolooper.settings') || '{}'); } catch {}
   if (typeof stored.clickVol === 'number') settings.clickVol = Math.min(3, stored.clickVol * 3);
-  settings.v = 7; saveSettings();
+  settings.v = 10; saveSettings();
 }
 
 // ------------------------------------------------------------------ state
@@ -1297,12 +1302,21 @@ async function createEngine() {
   window.sampleRate = sr;
   const proc = new Proc();
   window.__looper.onmsg = onEngine;
-  const BUF = 1024;
+  const BUF = settings.buffer === 'safe' ? 4096 : 2048;
   const spn = ctx.createScriptProcessor(BUF, 2, 2);
+  let frameCount = null;
   spn.onaudioprocess = (e) => {
     const ib = e.inputBuffer, ob = e.outputBuffer;
-    // Output frame g plays at context time g / sr, as in the worklet.
-    window.currentFrame = Math.round(e.playbackTime * sr);
+    // Count frames ourselves: each buffer follows the previous one exactly. playbackTime jitters by
+    // a few ms on Android, and using it directly moved every click a little early or late.
+    // Only a real jump (a dropout of more than one buffer) resyncs the count.
+    const pf = Math.round(e.playbackTime * sr);
+    if (frameCount === null || Math.abs(pf - frameCount) > BUF * 1.5) {
+      if (frameCount !== null) dropouts++;
+      frameCount = pf;
+    }
+    window.currentFrame = frameCount;
+    frameCount += BUF;
     proc.process([[ib.getChannelData(0), ib.getChannelData(1)]], [[ob.getChannelData(0), ob.getChannelData(1)]]);
   };
   spn.connect(engineSplit);
@@ -1376,6 +1390,31 @@ function updateEstimate() {
   syncControls();
 }
 
+// ------------------------------------------------------------------ dropout detection
+// The audio clock and the system clock run side by side. When the audio stalls (a dropout), the
+// audio clock falls behind by the length of the gap, and every click after it comes late.
+let dropouts = 0, lagBase = null, lagAt = 0, dropWarned = 0;
+function checkDropouts() {
+  const now = performance.now();
+  if (now - lagAt < 250) return;
+  lagAt = now;
+  const ts = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;
+  if (!ts || !(ts.contextTime > 0) || ctx.state !== 'running' || document.visibilityState !== 'visible') { lagBase = null; return; }
+  const lag = ts.performanceTime - ts.contextTime * 1000;
+  if (lagBase === null) { lagBase = lag; return; }
+  if (lag - lagBase > 10) {
+    dropouts++;
+    if (settings.metro && dropouts - dropWarned >= 2 && now - (checkDropouts.warnAt || 0) > 20000) {
+      checkDropouts.warnAt = now; dropWarned = dropouts;
+      toast(settings.buffer === 'safe'
+        ? 'Audio dropouts: the tablet can\'t keep up. Turn Video off and close other apps.'
+        : 'Audio dropouts make the beat stumble. Settings → Latency: pick ' + (settings.buffer === 'lowest' ? 'Normal' : 'Safe') + '.');
+    }
+    syncLatInfo();
+  }
+  lagBase = lag; // compare step by step: slow clock drift is ignored, sudden jumps are dropouts
+}
+
 /** Where the delay comes from, so a big number can be traced to its cause. */
 function syncLatInfo() {
   const el = $('#latInfo');
@@ -1388,6 +1427,7 @@ function syncLatInfo() {
     `input ${typeof st.latency === 'number' ? ms(st.latency) : 'not reported'}`,
     `${sr} Hz${st.sampleRate && st.sampleRate !== sr ? ` (mic ${st.sampleRate} Hz, resampled)` : ''}`,
     compatBufferSec ? `compatibility mode +${ms(compatBufferSec)}` : 'low-latency engine',
+    `dropouts since start: ${dropouts}`,
   ];
   let tip = '';
   if (compatBufferSec) tip = ' Compatibility mode adds delay: open the page from the https link in Chrome.';
@@ -1777,6 +1817,7 @@ function frame() {
   }
 
   if (videoOn) syncVideos(aF);
+  checkDropouts();
 }
 
 // ------------------------------------------------------------------ top bar
